@@ -1,0 +1,39 @@
+{
+  "ApiKey": "<YOUR_API_KEY>",
+  "ApiSecret": "<YOUR_API_SECRET>",
+  "AccessToken": "",
+  "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=sa;Password=YourStrong!Pass;TrustServerCertificate=True;",
+  "DefaultTimeframeMinutes": 1,
+  "PaperTrade": true,
+  "EnableSimulator": false,
+  "SubscribedInstruments": [
+    {
+      "Token": 256265,
+      "Name": "NIFTY",
+      "TimeframeMinutes": 1
+    }
+  ],
+  "AutoSubscribe": [
+    {
+      "Symbol": "NIFTY",
+      "Range": 10
+    }
+  ],
+  "CandleBuilder": {
+    "Enabled": true,
+    "RunAt": "15:40",
+    "Intervals": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "EmailNotification": {
+      "Enabled": false,
+      "SmtpServer": "smtp.gmail.com",
+      "Port": 587,
+      "Username": "",
+      "Password": "",
+      "To": ""
+    }
+  }
+}
