@@ -23,8 +23,8 @@ namespace ZerodhaOxySocket
             _ticker.OnReconnect   += () => OnStatus?.Invoke("🟡 Reconnecting");
             _ticker.OnNoReconnect += () => OnStatus?.Invoke("NoReconnect");
             _ticker.OnError       += (e) => OnStatus?.Invoke("Error: " + e);
-            _ticker.OnOrderUpdate += (o) => OnStatus?.Invoke("OrderUpdate: " + (o?.OrderId ?? ""));
-            _ticker.OnTick += ticks => { if (ticks != null && ticks.Any()) OnTicks?.Invoke(ticks); };
+            _ticker.OnOrderUpdate += (o) => OnStatus?.Invoke("OrderUpdate: " + (o.OrderId ?? ""));
+            _ticker.OnTick += ticks => { OnTicks?.Invoke(new[] { ticks } ); };
 
             _ticker.EnableReconnect(5, 50);
             _ticker.Connect();
@@ -33,7 +33,7 @@ namespace ZerodhaOxySocket
         public void Subscribe(IEnumerable<uint> tokens, string mode = "full")
         {
             if (_ticker == null) { OnStatus?.Invoke("Subscribe ignored: not connected."); return; }
-            var arr = tokens?.Select(t => t.ToString()).ToArray() ?? Array.Empty<string>();
+            var arr = tokens?.ToArray();
             if (arr.Length == 0) return;
             _ticker.Subscribe(arr);
             var m = mode.ToLower() switch { "ltp" => Constants.MODE_LTP, "quote" => Constants.MODE_QUOTE, _ => Constants.MODE_FULL };
@@ -44,7 +44,7 @@ namespace ZerodhaOxySocket
         public void Unsubscribe(IEnumerable<uint> tokens)
         {
             if (_ticker == null) return;
-            var arr = tokens?.Select(t => t.ToString()).ToArray() ?? Array.Empty<string>();
+            var arr = tokens?.ToArray();
             if (arr.Length == 0) return;
             _ticker.UnSubscribe(arr);
             OnStatus?.Invoke($"Unsubscribed {arr.Length}");

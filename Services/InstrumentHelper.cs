@@ -110,5 +110,67 @@ namespace ZerodhaOxySocket
 
             return options.Count == 0 ? 0 : (uint)options.First().InstrumentToken;
         }
+
+        private static List<InstrumentInfo> LoadAll()
+        {
+            var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
+            return LoadInstrumentsFromCsv(path); // your existing method
+        }
+
+        private static DateTime ParseExpiry(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return DateTime.MaxValue;
+            // Try common formats used in Zerodha dumps
+            if (DateTime.TryParse(s, out var d)) return d;
+            // Fallbacks (add more if your dump uses specific patterns)
+            string[] fmts = { "yyyy-MM-dd", "dd-MMM-yyyy", "dd-MMM-yy" };
+            if (DateTime.TryParseExact(s, fmts, CultureInfo.InvariantCulture,
+                                       DateTimeStyles.None, out d)) return d;
+            return DateTime.MaxValue;
+        }
+
+        public static InstrumentInfo FindLatestByTradingsymbol(string tradingSymbol)
+        {
+            var all = LoadAll();
+            var list = all
+                .Where(i => string.Equals(i.Tradingsymbol, tradingSymbol, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (list.Count == 0) return null;
+
+            // Prefer latest expiry if there are multiple rows
+            return list
+                .OrderByDescending(i => ParseExpiry(i.Expiry?.ToString()))
+                .First();
+        }
+
+        /// <summary>
+        /// Find the nearest option by underlying name, target strike and CE/PE.
+        /// Prefers closest strike, then earliest future expiry.
+        /// </summary>
+        public static InstrumentInfo FindNearestOption(string underlying, int targetStrike, string ceOrPe)
+        {
+            ceOrPe = (ceOrPe ?? "CE").ToUpperInvariant();
+            var all = LoadAll();
+
+            var opts = all.Where(i =>
+                    (i.InstrumentType?.ToUpperInvariant() == ceOrPe) &&
+                    (i.Segment?.StartsWith("NFO", StringComparison.OrdinalIgnoreCase) ?? false) &&
+                    // match underlying in Name or Tradingsymbol (loose match is safer across formats)
+                    ((i.Name?.IndexOf(underlying, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
+                     || (i.Tradingsymbol?.IndexOf(underlying, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0) &&
+                    i.Strike > 0
+                )
+                .ToList();
+
+            if (opts.Count == 0) return null;
+
+            var now = DateTime.Today;
+
+            return opts
+                .OrderBy(i => Math.Abs(i.Strike - targetStrike))
+                .ThenBy(i => ParseExpiry(i.Expiry?.ToString()) < now ? DateTime.MaxValue : ParseExpiry(i.Expiry?.ToString())) // prefer future/nearest expiry
+                .First();
+        }
     }
 }

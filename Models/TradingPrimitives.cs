@@ -1,4 +1,5 @@
 using System;
+using ZerodhaOxySocket.Services;
 
 namespace ZerodhaOxySocket
 {
@@ -16,7 +17,7 @@ namespace ZerodhaOxySocket
 
     public class Signal
     {
-        public DateTime Time { get; set; } = DateTime.Now;
+        public DateTime Time { get; set; } = Clock.NowIst();
         public SignalType Type { get; set; }
         public double Price { get; set; }
         public string Note { get; set; } = "";

@@ -1,5 +1,6 @@
 using System;
 using System.Data.SqlClient;
+using ZerodhaOxySocket.Services;
 
 namespace ZerodhaOxySocket
 {
@@ -14,8 +15,8 @@ namespace ZerodhaOxySocket
                 "15m" => 15,
                 _ => 1
             };
-            var from = fromUtc ?? DateTime.UtcNow.Date;
-            var to = toUtc ?? DateTime.UtcNow;
+            var from = fromUtc ?? Clock.NowIst().Date;
+            var to = toUtc ?? Clock.NowIst();
 
             using var conn = new SqlConnection(cs);
             conn.Open();

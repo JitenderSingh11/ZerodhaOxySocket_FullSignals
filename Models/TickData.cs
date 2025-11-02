@@ -5,6 +5,7 @@ namespace ZerodhaOxySocket
     public class TickData
     {
         public uint InstrumentToken { get; set; }
+        public string InstrumentName { get; set; } = "";
         public double LastPrice { get; set; }
         public long LastQuantity { get; set; }
         public long Volume { get; set; }

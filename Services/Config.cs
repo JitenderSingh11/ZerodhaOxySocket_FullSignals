@@ -1,7 +1,32 @@
+using Newtonsoft.Json;
 using System.Collections.Generic;
+using System.IO;
 
 namespace ZerodhaOxySocket
 {
+    public class TradingSettings
+    {
+        public int TimeframeMinutes { get; set; } = 5;
+        public int SeedBars { get; set; } = 200;
+        public int OptionSpread { get; set; } = 10;
+        public long? UnderlyingToken { get; set; } = 256265;
+    }
+
+    public static class Config
+    {
+        private static AppConfig _cfg = new AppConfig();
+        public static AppConfig Current => _cfg;
+
+        public static void Load(string baseDir)
+        {
+            var path = Path.Combine(baseDir, "config.json");
+            if (!File.Exists(path)) return;
+            var json = File.ReadAllText(path);
+            var cfg = JsonConvert.DeserializeObject<AppConfig>(json);
+            if (cfg != null) _cfg = cfg;
+        }
+    }
+
     public class EmailConfig
     {
         public bool Enabled { get; set; } = false;
@@ -23,6 +48,7 @@ namespace ZerodhaOxySocket
         public string Symbol { get; set; } = "NIFTY";
         public int Range { get; set; } = 10;
     }
+
     public class AppConfig
     {
         public string ApiKey { get; set; } = "";
@@ -33,9 +59,12 @@ namespace ZerodhaOxySocket
         public bool PaperTrade { get; set; } = true;
         public bool EnableSimulator { get; set; } = false;
         public List<SubscribedInstrument> SubscribedInstruments { get; set; } = new();
-        public List<AutoSubConfig> AutoSubscribe { get; set; } = new() { new AutoSubConfig{ Symbol="NIFTY", Range=10 } };
+        public List<AutoSubConfig> AutoSubscribe { get; set; } = new() { new AutoSubConfig { Symbol = "NIFTY", Range = 10 } };
         public CandleBuilderConfig CandleBuilder { get; set; } = new();
+
+        public TradingSettings Trading { get; set; } = new TradingSettings();
     }
+    
     public class SubscribedInstrument
     {
         public long Token { get; set; }

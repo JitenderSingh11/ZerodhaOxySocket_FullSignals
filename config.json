@@ -1,8 +1,15 @@
 {
-  "ApiKey": "<YOUR_API_KEY>",
-  "ApiSecret": "<YOUR_API_SECRET>",
+  "ApiKey": "x2pba5w39mfmgd22",
+  "ApiSecret": "admyh3xb4o4zafmgvpewi38vd3n676rp",
   "AccessToken": "",
-  "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=sa;Password=YourStrong!Pass;TrustServerCertificate=True;",
+  "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;",
+  "Trading": {
+    "TimeframeMinutes": 5,
+    "SeedBars": 200,
+    "OptionSpread": 10,
+    "UnderlyingToken": 256265
+  },
+
   "DefaultTimeframeMinutes": 1,
   "PaperTrade": true,
   "EnableSimulator": false,

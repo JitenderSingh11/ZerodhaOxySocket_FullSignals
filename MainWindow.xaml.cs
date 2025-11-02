@@ -9,6 +9,7 @@ using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.Series;
 using KiteConnect;
+using ZerodhaOxySocket.Services;
 
 namespace ZerodhaOxySocket
 {
@@ -30,7 +31,7 @@ namespace ZerodhaOxySocket
             TickHub.OnLtp += (token, ltp, vol) => Dispatcher.Invoke(() =>
             {
                 _tickCount++;
-                _lastTickLocal = DateTime.Now;
+                _lastTickLocal = Clock.NowIst();
                 txtTickStats.Text = $"Ticks: {_tickCount:n0} • Last: {_lastTickLocal:T} • Token: {token} • LTP: {ltp:F2}";
                 UpdateChartTitle(token, ltp);
                 AppendLog($"Tick {token}: LTP={ltp:F2} Vol={vol}");
@@ -48,7 +49,7 @@ namespace ZerodhaOxySocket
 
         private void AppendLog(string line)
         {
-            txtLog.AppendText($"{DateTime.Now:HH:mm:ss}  {line}{Environment.NewLine}");
+            txtLog.AppendText($"{Clock.NowIst():HH:mm:ss}  {line}{Environment.NewLine}");
             txtLog.ScrollToEnd();
         }
 
@@ -200,7 +201,7 @@ namespace ZerodhaOxySocket
                 }
                 catch (KiteException ke)
                 {
-                    MessageBox.Show($"Refresh failed: {ke.Message}\nCode: {ke.Code}", "Kite Error");
+                    MessageBox.Show($"Refresh failed: {ke.Message}\nException: {ke.InnerException}", "Kite Error");
                 }
                 catch (Exception ex)
                 {
