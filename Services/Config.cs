@@ -24,6 +24,12 @@ namespace ZerodhaOxySocket
         public string EodExit { get; set; } = "15:20:00";
         public double MinBodyPct { get; set; } = 0.15;
         public double MinRangeAtr { get; set; } = 0.6;
+
+        /// <summary>
+        /// Minimum historical bars required before evaluating signals.
+        /// Used to warm up indicators.
+        /// </summary>
+        public int SeedBars { get; set; } = 200;
     }
 
     public static class Config

@@ -23,7 +23,8 @@ namespace ZerodhaOxySocket
                 if (o.Status != OrderStatus.Open || o.InstrumentToken != token) continue;
 
                 // Underlying ATR (5m)
-                double atr = CandleHelper.GetAtrForUnderlying(o.UnderlyingToken, Config.Current.Trading.AtrPeriod);
+                double atr = UnderlyingCandleCache.GetAtr(o.UnderlyingToken, Config.Current.Trading.AtrPeriod);
+
                 if (atr <= 0) continue;
 
                 // Conservative deltas (can be improved later)

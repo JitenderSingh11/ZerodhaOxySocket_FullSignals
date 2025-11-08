@@ -1,4 +1,5 @@
 ﻿using KiteConnect;
+using Newtonsoft.Json.Linq;
 using OxyPlot.Wpf;
 using System;
 using System.Collections.Concurrent;
@@ -8,6 +9,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using static System.Net.WebRequestMethods;
 
 namespace ZerodhaOxySocket
 {
@@ -62,6 +64,17 @@ namespace ZerodhaOxySocket
             StartWriter();
         }
 
+        private static void AppendStatus(string message)
+        {
+            try
+            {
+                OnStatus?.Invoke(message);   // if your TickHub already exposes this event
+            }
+            catch { /* no-op */ }
+            System.Diagnostics.Debug.WriteLine(message);
+        }
+
+
         public static void Connect()
         {
             _socket?.Dispose();
@@ -111,6 +124,8 @@ namespace ZerodhaOxySocket
                                 if (App.Current.MainWindow is MainWindow mw)
                                     mw.AddCandle(closed);
                             });
+
+                            UnderlyingCandleCache.Put((long)tokenU, closed);
 
                             if (tokenU == (uint)(Config.Current.Trading.UnderlyingToken ?? 256265))
                             {
@@ -173,6 +188,13 @@ namespace ZerodhaOxySocket
 
                         }
                     }
+
+                    var underlying = Config.Current.Trading.UnderlyingToken ?? 256265;
+                    if ((long)tokenU != underlying)
+                    {
+                        ExitManager.OnOptionTick(tokenU, (double)t.LastPrice, (DateTime)t.LastTradeTime);
+                    }
+
                 }
             };
 
