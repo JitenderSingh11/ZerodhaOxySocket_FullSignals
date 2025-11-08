@@ -4,18 +4,34 @@ using System.IO;
 
 namespace ZerodhaOxySocket
 {
-    public class TradingSettings
+    public sealed class TradingSettings
     {
         public int TimeframeMinutes { get; set; } = 5;
-        public int SeedBars { get; set; } = 200;
-        public int OptionSpread { get; set; } = 10;
         public long? UnderlyingToken { get; set; } = 256265;
+        public bool AllowMultipleOpenPositions { get; set; } = false;
+        public int DebounceCandles { get; set; } = 2;
+
+        public int AtrPeriod { get; set; } = 14;
+        public double AtrStopMult { get; set; } = 1.5;
+        public double AtrTrailMult { get; set; } = 2.0;
+
+        public int FastEma { get; set; } = 20;
+        public int SlowEma { get; set; } = 50;
+        public int RsiPeriod { get; set; } = 14;
+        public double RsiBuyBelow { get; set; } = 55;
+        public double RsiSellAbove { get; set; } = 45;
+
+        public string EodExit { get; set; } = "15:20:00";
+        public double MinBodyPct { get; set; } = 0.15;
+        public double MinRangeAtr { get; set; } = 0.6;
     }
 
     public static class Config
     {
         private static AppConfig _cfg = new AppConfig();
         public static AppConfig Current => _cfg;
+
+        public static string ConnectionString { get; private set; }
 
         public static void Load(string baseDir)
         {
@@ -24,6 +40,8 @@ namespace ZerodhaOxySocket
             var json = File.ReadAllText(path);
             var cfg = JsonConvert.DeserializeObject<AppConfig>(json);
             if (cfg != null) _cfg = cfg;
+
+            ConnectionString = _cfg.SqlConnectionString;
         }
     }
 

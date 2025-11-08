@@ -3,27 +3,39 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:oxy="http://oxyplot.org/wpf"
         Title="Zerodha OxySocket Pro" Height="850" Width="1400">
-  <DockPanel>
-    <Menu DockPanel.Dock="Top">
-      <MenuItem Header="File">
-        <MenuItem x:Name="miRefreshToken" Header="Refresh Access Token" Click="RefreshToken_Click"/>
-        <Separator/>
-        <MenuItem Header="Exit" Click="Exit_Click"/>
-      </MenuItem>
-      <MenuItem Header="Stream">
-        <MenuItem x:Name="miConnect" Header="Connect" Click="Connect_Click"/>
-        <MenuItem x:Name="miSubscribeTabs" Header="Subscribe from config (tabs)" Click="SubscribeTabs_Click"/>
-      </MenuItem>
-    </Menu>
 
-    <StatusBar DockPanel.Dock="Bottom">
+  <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="File">
+                <MenuItem x:Name="miRefreshToken" Header="Refresh Access Token" Click="RefreshToken_Click"/>
+                <Separator/>
+                <MenuItem Header="Exit" Click="Exit_Click"/>
+            </MenuItem>
+            <MenuItem Header="Stream">
+                <MenuItem x:Name="miConnect" Header="Connect" Click="Connect_Click"/>
+                <MenuItem x:Name="miSubscribeTabs" Header="Subscribe from config (tabs)" Click="SubscribeTabs_Click"/>
+            </MenuItem>
+            <MenuItem Header="_Tools">
+                <MenuItem Header="Replay Engine..." Click="OpenReplayWindow_Click"/>
+                <MenuItem Header="Refresh Instruments..." Click="RefreshInstruments_Click"/>
+            </MenuItem>
+            <CheckBox x:Name="chkAutoScroll" Content="Auto-scroll" IsChecked="True"
+          Checked="ChkAutoScroll_Checked" Unchecked="ChkAutoScroll_Unchecked"/>
+        </Menu>
+
+        <StatusBar DockPanel.Dock="Bottom">
       <StatusBarItem><TextBlock x:Name="txtStatus" Text="⚠️ No access token. Use File → Refresh Access Token first."/></StatusBarItem>
       <StatusBarItem><TextBlock x:Name="txtTickStats" Text="Ticks: 0 • Last: —"/></StatusBarItem>
     </StatusBar>
 
-    <DockPanel>
-      <TextBox x:Name="txtLog" DockPanel.Dock="Top" Height="100" Margin="6" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
-      <TabControl x:Name="InstrumentsTab" Margin="6"/>
+        <DockPanel>
+            <TextBox x:Name="txtLog" DockPanel.Dock="Top" Height="100" Margin="6" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+            <TabControl x:Name="InstrumentsTab" Margin="6" SelectionChanged="InstrumentsTab_SelectionChanged"/>
+            <oxy:PlotView x:Name="PlotView"
+              Grid.Row="1"
+              Margin="8"
+              VerticalAlignment="Stretch"
+              HorizontalAlignment="Stretch"/>
+        </DockPanel>
     </DockPanel>
-  </DockPanel>
 </Window>

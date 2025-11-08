@@ -1,3 +1,5 @@
+﻿using KiteConnect;
+using OxyPlot.Wpf;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -5,7 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using KiteConnect;
+using System.Xml.Linq;
 
 namespace ZerodhaOxySocket
 {
@@ -104,13 +106,71 @@ namespace ZerodhaOxySocket
                             OnCandleClosed?.Invoke(null, new CandleEventArgs { InstrumentToken = (long)tokenU, InstrumentName = ctx.Name, Candle = closed });
                             DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
 
-                            var sig = ctx.EvaluateSignalsPositionAware();
-                            if (sig != null)
+                            App.Current.Dispatcher.Invoke(() =>
                             {
-                                var mapped = MapSignalToOption(sig, (double)t.LastPrice);
-                                DataAccess.InsertSignal(new Signal { Type = sig.Type, Price = mapped.Price, Note = mapped.Note }, mapped.Token, mapped.Name, true);
-                                OnSignal?.Invoke(null, new SignalEventArgs { InstrumentToken = (long)mapped.Token, InstrumentName = mapped.Name, Signal = new Signal { Type = sig.Type, Price = mapped.Price, Note = mapped.Note } });
+                                if (App.Current.MainWindow is MainWindow mw)
+                                    mw.AddCandle(closed);
+                            });
+
+                            if (tokenU == (uint)(Config.Current.Trading.UnderlyingToken ?? 256265))
+                            {
+                                var sig = ctx.EvaluateSignalsPositionAware_Conservative();
+                                if (sig == null) return;
+
+                                if (!SignalGate.ShouldEmitSignal(tokenU, sig.Type, sig.Time, Config.Current.Trading.DebounceCandles))
+                                    return;
+
+                                if (!Config.Current.Trading.AllowMultipleOpenPositions &&
+                                    OrderManager.HasOpenPositionForUnderlying(tokenU))
+                                {
+                                    AppendStatus($"[{sig.Time:HH:mm}] Suppressed {sig.Type}: position already open.");
+                                    return;
+                                }
+
+                                var optType = (sig.Type == SignalType.Buy) ? "CE" : "PE";
+                                var mapped = OptionMapper.ChooseATMOption(sig.Time, sig.Price, optType);
+                                if (mapped == null)
+                                {
+                                    AppendStatus($"[{sig.Time:HH:mm}] No ATM option found for {optType}.");
+                                    return;
+                                }
+
+                                var order = new OrderRecord
+                                {
+                                    OrderId = Guid.NewGuid(),
+                                    SignalId = Guid.NewGuid(),
+                                    ReplayId = Guid.Empty,
+                                    InstrumentToken = mapped.InstrumentToken,
+                                    InstrumentName = mapped.Tradingsymbol,
+                                    UnderlyingToken = Config.Current.Trading.UnderlyingToken ?? 256265,
+                                    UnderlyingPriceAtSignal = sig.Price,
+                                    Side = (sig.Type == SignalType.Buy) ? "BUY" : "SELL",
+                                    QuantityLots = 1,
+                                    Status = OrderStatus.Placed
+                                };
+                                OrderManager.CreateOrder(order);
+
+                                var simOrder = new SimOrder
+                                {
+                                    ReplayId = order.ReplayId,
+                                    InstrumentToken = (uint)mapped.InstrumentToken,
+                                    InstrumentName = mapped.Tradingsymbol,
+                                    UnderlyingToken = order.UnderlyingToken,
+                                    UnderlyingPrice = sig.Price,
+                                    Side = order.Side,
+                                    QuantityLots = order.QuantityLots,
+                                    PlacedAt = sig.Time,
+                                    Reason = "ConservativeA"
+                                };
+                                var sim = OrderSimulator.PlaceOrderNextTick(order.ReplayId, simOrder);
+                                OrderManager.AttachFill(order, sim);
+
+                                if (order.Status == OrderStatus.Open)
+                                    ExitManager.Track(order);
+
+                                AppendStatus($"[{sig.Time:HH:mm}] {sig.Type} → {mapped.Tradingsymbol} @ {order.EntryPrice:F2}");
                             }
+
                         }
                     }
                 }
@@ -231,5 +291,51 @@ namespace ZerodhaOxySocket
             Flush();
             _socket?.Dispose();
         }
+
+        public static void ProcessReplayTick(TickData t, Guid replayId)
+        {
+            var tokenU = t.InstrumentToken;
+            if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity))
+                return;
+
+            var name = ResolveName(tokenU);
+            _tickQueue.Enqueue(t);
+            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+
+            var ctx = _contexts.GetOrAdd(tokenU, _ => new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
+            // important: pass the tick's TickTime into ProcessTick so InstrumentContext uses it
+            var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime); // you may need to add overload to InstrumentContext: ProcessTickWithTime
+            if (closed != null && tokenU == (uint)(Config.Current.Trading.UnderlyingToken ?? 256265))
+            {
+                OnCandleClosed?.Invoke(null, new CandleEventArgs { InstrumentToken = (long)tokenU, InstrumentName = ctx.Name, Candle = closed });
+                DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
+
+                var sig = ctx.EvaluateSignalsPositionAware();
+                if (sig != null)
+                {
+                    // map to an option (deterministic)
+                    var mapped = OptionMapper.ChooseATMOption(closed.Time, t.LastPrice, sig.Type == SignalType.Buy ? "CE" : "PE");
+                    if (mapped != null)
+                    {
+                        // create order and simulate fill
+                        var order = new SimOrder
+                        {
+                            ReplayId = replayId,
+                            InstrumentToken = (uint)mapped.InstrumentToken,
+                            InstrumentName = mapped.Tradingsymbol,
+                            UnderlyingToken = Config.Current.Trading.UnderlyingToken ?? 256265,
+                            UnderlyingPrice = t.LastPrice,
+                            Side = sig.Type == SignalType.Buy ? "BUY" : "SELL",
+                            QuantityLots = 1,
+                            PlacedAt = closed.Time,
+                            Reason = "UnderlyingSignal-Replay"
+                        };
+                        var sim = OrderSimulator.PlaceOrderNextTick(replayId, order);
+                        // record mapping if desired, raise events, etc.
+                    }
+                }
+            }
+        }
+
     }
 }

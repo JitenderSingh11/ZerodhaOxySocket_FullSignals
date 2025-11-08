@@ -8,9 +8,9 @@
     {
         public static class DataAccess
         {
-            private static string _cs = "";
+            private static string _cs = Config.ConnectionString;
 
-            public static void InitDb(string cs)
+        public static void InitDb(string cs)
             {
                 _cs = cs;
                 using var conn = new SqlConnection(_cs);
@@ -103,10 +103,13 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
             {
                 using var conn = new SqlConnection(_cs);
                 conn.Open();
-                conn.Execute(@"
+
+            var interval = $"{Config.Current.Trading.TimeframeMinutes}m"; // e.g. "5m"
+
+            conn.Execute(@"
 INSERT INTO dbo.Candles(InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
 VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
-                    new { token = (long)token, name, interval = "1m", time = c.Time, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
+                    new { token = (long)token, name, Interval = interval, time = c.Time, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
             }
 
             public static void InsertSignal(Signal s, uint token, string name, bool isPaper = true)
@@ -144,5 +147,252 @@ ORDER BY BarTime DESC;";
                 rows.Reverse();
                 return rows;
             }
+
+        public static void SaveInstrumentSnapshotToDb(DateTime snapshotDate, IEnumerable<InstrumentInfo> instruments)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            using var tran = conn.BeginTransaction();
+            const string insert = @"
+INSERT INTO dbo.InstrumentSnapshots(SnapshotDate, InstrumentToken, Tradingsymbol, Name, Expiry, Strike, TickSize, LotSize, InstrumentType, Segment, Exchange, RawLine)
+VALUES(@date, @token, @symbol, @name, @expiry, @strike, @tickSize, @lot, @itype, @segment, @exchange, @raw)";
+            foreach (var i in instruments)
+            {
+                conn.Execute(insert, new
+                {
+                    date = snapshotDate.Date,
+                    token = (long)i.InstrumentToken,
+                    symbol = i.Tradingsymbol,
+                    name = i.Name,
+                    expiry = string.IsNullOrWhiteSpace(i.Expiry?.ToString()) ? (DateTime?)null : DateTime.Parse(i.Expiry?.ToString()),
+                    strike = i.Strike,
+                    tickSize = i.TickSize,
+                    lot = i.LotSize,
+                    itype = i.InstrumentType,
+                    segment = i.Segment,
+                    exchange = i.Exchange,
+                    raw = i.RawLine
+                }, transaction: tran);
+            }
+            tran.Commit();
+        }
+
+        public static List<InstrumentInfo> LoadSnapshotForDate(DateTime date)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            const string sql = @"
+SELECT InstrumentToken, Tradingsymbol, Name, Expiry, Strike, TickSize, LotSize, InstrumentType, Segment, Exchange, RawLine
+FROM dbo.InstrumentSnapshots
+WHERE SnapshotDate = @d";
+            var rows = conn.Query(sql, new { d = date.Date }).Select(r => new InstrumentInfo
+            {
+                InstrumentToken = (long)r.InstrumentToken,
+                Tradingsymbol = r.Tradingsymbol,
+                Name = r.Name,
+                Expiry = (DateTime?)r.Expiry,
+                Strike = (double?)r.Strike ?? 0,
+                TickSize = (double?)r.TickSize ?? 0,
+                LotSize = (int?)r.LotSize ?? 0,
+                InstrumentType = r.InstrumentType,
+                Segment = r.Segment,
+                Exchange = r.Exchange,
+                RawLine = r.RawLine
+            }).ToList();
+            return rows;
+        }
+
+        public static TickData GetFirstTickAfter(long token, DateTime afterTime)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            const string sql = @"
+SELECT TOP (1) InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice, OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
+FROM dbo.Ticks
+WHERE InstrumentToken = @tok AND TickTime > @t
+ORDER BY TickTime ASC";
+            var r = conn.QueryFirstOrDefault(sql, new { tok = token, t = afterTime });
+            if (r == null) return null;
+            return new TickData
+            {
+                InstrumentToken = (uint)(long)r.InstrumentToken,
+                InstrumentName = r.InstrumentName,
+                LastPrice = (double)r.LastPrice,
+                LastQuantity = (long?)r.LastQuantity ?? 0,
+                Volume = (long?)r.Volume ?? 0,
+                AveragePrice = (double?)r.AveragePrice ?? 0,
+                OpenPrice = (double?)r.OpenPrice ?? 0,
+                HighPrice = (double?)r.HighPrice ?? 0,
+                LowPrice = (double?)r.LowPrice ?? 0,
+                ClosePrice = (double?)r.ClosePrice ?? 0,
+                OI = (long?)r.OI ?? 0,
+                OIChange = (long?)r.OIChange ?? 0,
+                BidPrice1 = (double?)r.BidPrice1 ?? 0,
+                BidQty1 = (long?)r.BidQty1 ?? 0,
+                AskPrice1 = (double?)r.AskPrice1 ?? 0,
+                AskQty1 = (long?)r.AskQty1 ?? 0,
+                TickTime = (DateTime)r.TickTime
+            };
+        }
+
+        public static IEnumerable<TickData> StreamTicksRange(long[] tokens, DateTime start, DateTime end)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var sql = $@"
+SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
+       OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
+FROM dbo.Ticks
+WHERE InstrumentToken IN ({string.Join(",", tokens.Select((_, i) => "@t" + i))})
+  AND TickTime BETWEEN @s AND @e
+ORDER BY TickTime ASC";
+
+            var dp = new DynamicParameters();
+            for (int i = 0; i < tokens.Length; i++) dp.Add("@t" + i, tokens[i]);
+            dp.Add("@s", start);
+            dp.Add("@e", end);
+
+            var rdr = conn.Query<dynamic>(sql, dp, buffered: false);
+            foreach (var r in rdr)
+            {
+                yield return new TickData
+                {
+                    InstrumentToken = (uint)(long)r.InstrumentToken,
+                    InstrumentName = r.InstrumentName,
+                    LastPrice = (double)r.LastPrice,
+                    LastQuantity = (long?)r.LastQuantity ?? 0,
+                    Volume = (long?)r.Volume ?? 0,
+                    AveragePrice = (double?)r.AveragePrice ?? 0,
+                    OpenPrice = (double?)r.OpenPrice ?? 0,
+                    HighPrice = (double?)r.HighPrice ?? 0,
+                    LowPrice = (double?)r.LowPrice ?? 0,
+                    ClosePrice = (double?)r.ClosePrice ?? 0,
+                    OI = (long?)r.OI ?? 0,
+                    OIChange = (long?)r.OIChange ?? 0,
+                    BidPrice1 = (double?)r.BidPrice1 ?? 0,
+                    BidQty1 = (long?)r.BidQty1 ?? 0,
+                    AskPrice1 = (double?)r.AskPrice1 ?? 0,
+                    AskQty1 = (long?)r.AskQty1 ?? 0,
+                    TickTime = (DateTime)r.TickTime
+                };
+            }
+        }
+
+        public static List<(long Token, string Name)> FindDistinctInstrumentsByStrikeAndType(DateTime day, int strike, string ceOrPe)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var s = day.Date;
+            var e = day.Date.AddDays(1).AddSeconds(-1);
+            string pat = $"%{strike}%{ceOrPe}%";
+            var sql = @"
+SELECT DISTINCT InstrumentToken, InstrumentName
+FROM dbo.Ticks
+WHERE TickTime BETWEEN @s AND @e
+  AND InstrumentName LIKE @pat
+ORDER BY InstrumentName";
+            var rows = conn.Query(sql, new { s, e, pat }).ToList();
+            return rows.Select(r => ((long)r.InstrumentToken, (string)r.InstrumentName)).ToList();
+        }
+
+        public static void InsertSimTrade(Guid replayId, SimTrade trade)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            conn.Execute(@"
+INSERT INTO dbo.SimTrades(ReplayId, InstrumentToken, InstrumentName, UnderlyingToken, UnderlyingPrice, TradeSide, QuantityLots, EntryTime, EntryPrice, ExitTime, ExitPrice, Pnl, Reason)
+VALUES(@replay, @token, @name, @utok, @uprice, @side, @lots, @et, @ep, @xt, @xp, @pnl, @reason)",
+                new
+                {
+                    replay = replayId,
+                    token = (long)trade.InstrumentToken,
+                    name = trade.InstrumentName,
+                    utok = (long?)trade.UnderlyingToken,
+                    uprice = trade.UnderlyingPrice,
+                    side = trade.Side,
+                    lots = trade.QuantityLots,
+                    et = trade.EntryTime,
+                    ep = trade.EntryPrice,
+                    xt = trade.ExitTime,
+                    xp = trade.ExitPrice,
+                    pnl = trade.Pnl,
+                    reason = trade.Reason ?? ""
+                });
+        }
+
+        public static SimTrade GetLastOpenSimTrade(Guid replayId, long instrumentToken)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var sql = @"
+SELECT TOP 1 * FROM dbo.SimTrades
+WHERE ReplayId = @rid AND InstrumentToken = @tok AND ExitTime IS NULL
+ORDER BY EntryTime DESC";
+            return conn.QueryFirstOrDefault<SimTrade>(sql, new { rid = replayId, tok = instrumentToken });
+        }
+
+        public static void UpdateSimTradeExit(SimTrade trade)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var sql = @"
+UPDATE dbo.SimTrades
+SET ExitTime=@xt, ExitPrice=@xp, Pnl=@pnl, Reason=@reason
+WHERE Id=@id";
+            conn.Execute(sql, new { xt = trade.ExitTime, xp = trade.ExitPrice, pnl = trade.Pnl, reason = trade.Reason, id = trade.Id });
+        }
+
+        public static void UpsertInstrumentSnapshot(DateTime date, IEnumerable<InstrumentInfo> items)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            using var tx = conn.BeginTransaction();
+
+            const string sql = @"
+MERGE dbo.InstrumentSnapshots AS tgt
+USING (VALUES (@date, @token, @symbol, @name, @expiry, @strike, @tick, @lot, @itype, @segment, @exchange, @raw))
+     AS src (SnapshotDate, InstrumentToken, Tradingsymbol, Name, Expiry, Strike, TickSize, LotSize, InstrumentType, Segment, Exchange, RawLine)
+ON (tgt.SnapshotDate = src.SnapshotDate AND tgt.InstrumentToken = src.InstrumentToken)
+WHEN NOT MATCHED THEN
+    INSERT (SnapshotDate, InstrumentToken, Tradingsymbol, Name, Expiry, Strike, TickSize, LotSize, InstrumentType, Segment, Exchange, RawLine)
+    VALUES (src.SnapshotDate, src.InstrumentToken, src.Tradingsymbol, src.Name, src.Expiry, src.Strike, src.TickSize, src.LotSize, src.InstrumentType, src.Segment, src.Exchange, src.RawLine)
+WHEN MATCHED THEN
+    UPDATE SET
+        Tradingsymbol  = src.Tradingsymbol,
+        Name           = src.Name,
+        Expiry         = src.Expiry,
+        Strike         = src.Strike,
+        TickSize       = src.TickSize,
+        LotSize        = src.LotSize,
+        InstrumentType = src.InstrumentType,
+        Segment        = src.Segment,
+        Exchange       = src.Exchange,
+        RawLine        = src.RawLine;";
+
+            foreach (var i in items)
+            {
+                DateTime? exp = null;
+                if (i.Expiry.HasValue && DateTime.TryParse(i.Expiry.Value.ToString("s"), out var exd))
+                    exp = exd.Date;
+
+                conn.Execute(sql, new
+                {
+                    date = date.Date,
+                    token = (long)i.InstrumentToken,
+                    symbol = i.Tradingsymbol,
+                    name = i.Name,
+                    expiry = exp,
+                    strike = i.Strike,
+                    tick = i.TickSize,
+                    lot = i.LotSize,
+                    itype = i.InstrumentType,
+                    segment = i.Segment,
+                    exchange = i.Exchange,
+                    raw = i.RawLine ?? string.Empty
+                }, transaction: tx);
+            }
+
+            tx.Commit();
         }
     }
+}

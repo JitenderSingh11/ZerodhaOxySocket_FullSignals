@@ -20,12 +20,62 @@ namespace ZerodhaOxySocket
         private long _tickCount = 0;
         private DateTime _lastTickLocal = DateTime.MinValue;
 
+        private PlotModel _plotModel;
+        private CandleStickSeries _candleSeries;
+
+        private bool _autoScroll = true;                       // enable/disable auto scroll
+        private TimeSpan _autoScrollWindow = TimeSpan.FromMinutes(60); // visible window size
+        private double _autoPaddingMinutes = 1.0;              // small padding on right in minutes
+
         public MainWindow()
         {
             InitializeComponent();
+            Config.Load(AppDomain.CurrentDomain.BaseDirectory);
+
+            _plotModel = new PlotModel { Title = "NIFTY 5m" };
+
+            _plotModel.Axes.Add(new DateTimeAxis
+            {
+                Position = AxisPosition.Bottom,
+                StringFormat = "HH:mm",
+                MajorGridlineStyle = LineStyle.Solid,
+                MinorGridlineStyle = LineStyle.Dot,
+                Title = "Time"
+            });
+
+            _plotModel.Axes.Add(new LinearAxis
+            {
+                Position = AxisPosition.Left,
+                MajorGridlineStyle = LineStyle.Solid,
+                MinorGridlineStyle = LineStyle.Dot,
+                Title = "Price"
+            });
+
+            _candleSeries = new CandleStickSeries
+            {
+                Title = "Candles",
+                CandleWidth = 0.3, // smaller for better fit
+                IncreasingColor = OxyColors.Green,
+                DecreasingColor = OxyColors.Red
+            };
+
+            _plotModel.Series.Add(_candleSeries);
+            PlotView.Model = _plotModel;
+
             LoadConfig();
             UpdateMenuState();
-            _ = InstrumentDownloader.EnsureInstrumentsCsvAsync();
+            _ = InstrumentCatalog.EnsureTodayAsync()
+    .ContinueWith(t =>
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (t.Exception != null)
+                AppendLog($"Instrument snapshot failed: {t.Exception.GetBaseException().Message}");
+            else
+                AppendLog($"Instrument snapshot OK for {DateTime.Today:yyyy-MM-dd} ({t.Result.Count} rows).");
+        });
+    });
+
 
             TickHub.OnStatus += s => Dispatcher.Invoke(() => txtStatus.Text = s);
             TickHub.OnLtp += (token, ltp, vol) => Dispatcher.Invoke(() =>
@@ -40,6 +90,7 @@ namespace ZerodhaOxySocket
             TickHub.OnCandleClosed += (s, e) => Dispatcher.Invoke(() =>
             {
                 AppendLog($"Candle {e.InstrumentName} O:{e.Candle.Open:F2} H:{e.Candle.High:F2} L:{e.Candle.Low:F2} C:{e.Candle.Close:F2} V:{e.Candle.Volume}");
+                AddCandle(e.Candle);
             });
             TickHub.OnSignal += (s, e) => Dispatcher.Invoke(() =>
             {
@@ -210,6 +261,134 @@ namespace ZerodhaOxySocket
             }
         }
 
+        private void OpenReplayWindow_Click(object sender, RoutedEventArgs e)
+        {
+           var w = new ReplayWindow();
+    w.Owner = this;
+    w.Show();
+        }
+
         private void Exit_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
+
+        public void AddCandle(Candle candle)
+        {
+            if (candle == null) return;
+
+            // convert time to OxyPlot's double X value
+            double x = DateTimeAxis.ToDouble(candle.Time);
+
+            Dispatcher.Invoke(() =>
+            {
+                // Append candle to CandleStickSeries
+                _candleSeries.Items.Add(new HighLowItem(
+           x,
+           candle.High,
+           candle.Low,
+           candle.Open,
+           candle.Close
+       ));
+
+
+                // keep last N items if you want to limit points (optional)
+                const int MAX_ITEMS = 1000;
+                if (_candleSeries.Items.Count > MAX_ITEMS)
+                    _candleSeries.Items.RemoveAt(0);
+
+                // Auto-scroll/zoom to the latest window
+                if (_autoScroll)
+                    AutoScrollToLatest(_autoScrollWindow);
+
+                // Redraw chart (false = don't recalc axes; true = recalc)
+                _plotModel.InvalidatePlot(false);
+            });
+        }
+
+        private void AutoScrollToLatest(TimeSpan window)
+        {
+            // find the DateTimeAxis on the model (bottom axis)
+            var xAxis = _plotModel.Axes.OfType<DateTimeAxis>().FirstOrDefault();
+            if (xAxis == null) return;
+
+            // if series empty, nothing to do
+            if (_candleSeries.Items == null || _candleSeries.Items.Count == 0) return;
+
+            // get last candle X (double)
+            var lastIndex = _candleSeries.Items.Count - 1;
+            double lastX = _candleSeries.Items[lastIndex].X;
+
+            // convert X back to DateTime and compute window boundaries
+            var lastDt = DateTimeAxis.ToDateTime(lastX);
+
+            // compute min/max to show
+            var minDt = lastDt.Subtract(window);
+            var maxDt = lastDt.AddMinutes(_autoPaddingMinutes); // right padding
+
+            double minX = DateTimeAxis.ToDouble(minDt);
+            double maxX = DateTimeAxis.ToDouble(maxDt);
+
+            // If only a few candles exist, you may want to show whole range
+            // Optionally ensure minX < maxX
+            if (minX >= maxX)
+            {
+                // small fallback
+                minX = lastX - (window.TotalDays * 1e-3);
+                maxX = lastX + (window.TotalDays * 1e-3);
+            }
+
+            // Zoom the X axis (preserves Y axis scale)
+            xAxis.Zoom(minX, maxX);
+            AutoZoomYAxisToVisible();
+
+            // You may also want to allow Y auto-zoom to price range of visible candles:
+            // _plotModel.Axes.OfType<LinearAxis>().First().Reset()?  (not needed usually)
+        }
+
+
+        private void AutoZoomYAxisToVisible()
+        {
+            var xAxis = _plotModel.Axes.OfType<DateTimeAxis>().FirstOrDefault();
+            var yAxis = _plotModel.Axes.OfType<LinearAxis>().FirstOrDefault();
+            if (xAxis == null || yAxis == null) return;
+
+            double minX = xAxis.ActualMinimum;
+            double maxX = xAxis.ActualMaximum;
+            if (double.IsNaN(minX) || double.IsNaN(maxX)) return;
+
+            // find visible candles
+            var visible = _candleSeries.Items.Where(it => it.X >= minX && it.X <= maxX).ToList();
+            if (!visible.Any()) return;
+
+            double low = visible.Min(it => it.Low);
+            double high = visible.Max(it => it.High);
+
+            // add small padding
+            double pad = (high - low) * 0.1;
+            yAxis.Zoom(low - pad, high + pad);
+        }
+
+
+        private void ChkAutoScroll_Checked(object sender, RoutedEventArgs e) => _autoScroll = true;
+        private void ChkAutoScroll_Unchecked(object sender, RoutedEventArgs e) => _autoScroll = false;
+
+
+        private void InstrumentsTab_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+
+        }
+
+        private async void RefreshInstruments_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var list = await InstrumentCatalog.EnsureTodayAsync();
+                AppendLog($"Instruments refreshed & snapshotted ({list.Count} rows).");
+                // (optional) if you cache instruments in-memory, refresh that cache here
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Refresh failed: {ex.Message}");
+            }
+        }
+
     }
 }

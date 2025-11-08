@@ -20,6 +20,13 @@ namespace ZerodhaOxySocket
         public string InstrumentType { get; set; } = "";
         public string Segment { get; set; } = "";
         public string Exchange { get; set; } = "";
+
+
+        /// <summary>
+        /// Raw CSV line or original raw string used when snapshotting (optional).
+        /// Used by snapshot/CSV save routines.
+        /// </summary>
+        public string RawLine { get; set; }
     }
 
     public static class InstrumentHelper
@@ -95,6 +102,7 @@ namespace ZerodhaOxySocket
         public static uint GetOptionToken(string symbol, int strike, string side, string? csvPath = null)
         {
             var list = LoadInstrumentsFromCsv(csvPath ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
+
             var today = DateTime.Today;
             var options = list.Where(i =>
                     i.Exchange == "NFO" &&
@@ -171,6 +179,97 @@ namespace ZerodhaOxySocket
                 .OrderBy(i => Math.Abs(i.Strike - targetStrike))
                 .ThenBy(i => ParseExpiry(i.Expiry?.ToString()) < now ? DateTime.MaxValue : ParseExpiry(i.Expiry?.ToString())) // prefer future/nearest expiry
                 .First();
+        }
+
+        /// <summary>
+        /// Load snapshot rows for the specified date from DB (via DataAccess).
+        /// Returns null or empty list if none.
+        /// </summary>
+        public static List<InstrumentInfo> LoadSnapshot(DateTime date)
+        {
+            try
+            {
+                // DataAccess.LoadSnapshotForDate was provided in the patch
+                var list = DataAccess.LoadSnapshotForDate(date);
+                return list ?? new List<InstrumentInfo>();
+            }
+            catch
+            {
+                return new List<InstrumentInfo>();
+            }
+        }
+
+        /// <summary>
+        /// Fallback discovery: find an option instrument for given date/strike and type (CE/PE)
+        /// by searching tick records. Returns the first matching InstrumentInfo or null.
+        /// </summary> 
+        public static InstrumentInfo FindOptionTokenFromTicks(DateTime day, int strike, string ceOrPe)
+        {
+            // DataAccess.FindDistinctInstrumentsByStrikeAndType returns a list of (Token, Name) tuples
+            var rows = DataAccess.FindDistinctInstrumentsByStrikeAndType(day, strike, ceOrPe);
+            if (rows == null || rows.Count == 0) return null;
+
+            // pick first candidate and construct a minimal InstrumentInfo
+            var first = rows.First();
+            return new InstrumentInfo
+            {
+                InstrumentToken = first.Token,
+                Tradingsymbol = first.Name,
+                Name = first.Name,
+                RawLine = $"{first.Token}\t{first.Name}"
+                // other fields unknown from tick-only discovery; left blank/zero
+            };
+        }
+
+        /// <summary>
+        /// Strict parser for Kite instruments with exact 12-column order:
+        /// instrument_token, exchange_token, tradingsymbol, name, last_price,
+        /// expiry, strike, tick_size, lot_size, instrument_type, segment, exchange
+        /// Supports comma or tab separators.
+        /// </summary>
+        public static List<InstrumentInfo> ParseCsvStrict(string path)
+        {
+            var lines = File.ReadAllLines(path);
+            var list = new List<InstrumentInfo>();
+            if (lines.Length == 0) return list;
+
+            bool hasHeader = lines[0].IndexOf("instrument_token", StringComparison.OrdinalIgnoreCase) >= 0;
+            var start = hasHeader ? 1 : 0;
+
+            for (int i = start; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                var cols = line.Split(new[] { '\t', ',' });
+                if (cols.Length < 12) continue;
+
+                // helpers
+                static long L(string s) => long.TryParse(s, out var v) ? v : 0;
+                static int I(string s) => int.TryParse(s, out var v) ? v : 0;
+                static double D(string s) => double.TryParse(s, out var v) ? v : 0;
+
+                var info = new InstrumentInfo
+                {
+                    RawLine = line,
+                    InstrumentToken = L(cols[0]),
+                    // cols[1] exchange_token (not stored)
+                    Tradingsymbol = cols[2],
+                    Name = cols[3],
+                    // cols[4] last_price (not stored)
+                    Expiry = string.IsNullOrWhiteSpace(cols[5]) ? null : (DateTime?)ParseDate(cols[5]),
+                    Strike = D(cols[6]),
+                    TickSize = D(cols[7]),
+                    LotSize = I(cols[8]),
+                    InstrumentType = cols[9],   // CE / PE / FUT / EQ
+                    Segment = cols[10],
+                    Exchange = cols[11]
+                };
+
+                list.Add(info);
+            }
+
+            return list;
         }
     }
 }

@@ -41,6 +41,27 @@
       "Username": "",
       "Password": "",
       "To": ""
+    },
+    "Trading": {
+      "TimeframeMinutes": 5,
+      "UnderlyingToken": 256265,
+      "AllowMultipleOpenPositions": false,
+      "DebounceCandles": 2,
+
+      "AtrPeriod": 14,
+      "AtrStopMult": 1.5,
+      "AtrTrailMult": 2.0,
+
+      "FastEma": 20,
+      "SlowEma": 50,
+      "RsiPeriod": 14,
+      "RsiBuyBelow": 55,
+      "RsiSellAbove": 45,
+
+      "EodExit": "15:20:00",
+      "MinBodyPct": 0.15,
+      "MinRangeAtr": 0.6
     }
+
   }
 }
