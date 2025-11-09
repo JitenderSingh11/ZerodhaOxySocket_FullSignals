@@ -11,13 +11,20 @@ namespace ZerodhaOxySocket
             TimeZoneInfo.FindSystemTimeZoneById(
                 Environment.OSVersion.Platform == PlatformID.Win32NT ? "India Standard Time" : "Asia/Kolkata");
 
-        public static DateTime NowIst() => TimeZoneInfo.ConvertTime(DateTime.UtcNow, IST);
-
-        public static bool IsRegularSessionNow()
+        public static DateTime NowIst()
         {
-            var t = NowIst().TimeOfDay;
-            return t >= Start.Add(TimeSpan.FromSeconds(-10)) && t <= End.Add(TimeSpan.FromSeconds(10));
+            // keep your existing impl if you already have it
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
+                TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
         }
+
+        public static bool IsRegularSessionAt(DateTime ist)
+        {
+            // 09:15–15:30 IST inclusive (adjust if you have pre/post rules)
+            var t = ist.TimeOfDay;
+            return t >= new TimeSpan(9, 15, 0) && t <= new TimeSpan(15, 30, 0);
+        }
+
 
         public static DateTime FloorToBucketIst(TimeSpan bucket)
         {

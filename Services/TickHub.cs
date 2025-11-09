@@ -82,118 +82,31 @@ namespace ZerodhaOxySocket
             _socket.OnStatus += s => OnStatus?.Invoke(s);
             _socket.OnTicks += ticks =>
             {
-                foreach (var t in ticks)
+                foreach (var kt in ticks)
                 {
-                    var tokenU = (uint)t.InstrumentToken;
-                    if (!ShouldRecord(tokenU, (double)t.LastPrice, t.Volume, t.LastQuantity))
-                        continue;
-
-                    var name = ResolveName(tokenU);
-
-                    var data = new TickData
+                    var tdata = new TickData
                     {
-                        InstrumentToken = tokenU,
-                        InstrumentName = name,
-                        LastPrice = (double)t.LastPrice,
-                        LastQuantity = t.LastQuantity,
-                        Volume = t.Volume,
-                        AveragePrice = (double)t.AveragePrice,
-                        OpenPrice = (double)t.Open,
-                        HighPrice = (double)t.High,
-                        LowPrice = (double)t.Low,
-                        ClosePrice = (double)t.Close,
-                        OI = t.OI,
+                        InstrumentToken = (uint)kt.InstrumentToken,
+                        InstrumentName = ResolveName((uint)kt.InstrumentToken),
+                        LastPrice = (double)kt.LastPrice,
+                        LastQuantity = kt.LastQuantity,
+                        Volume = kt.Volume,
+                        AveragePrice = (double)kt.AveragePrice,
+                        OpenPrice = (double)kt.Open,
+                        HighPrice = (double)kt.High,
+                        LowPrice = (double)kt.Low,
+                        ClosePrice = (double)kt.Close,
+                        OI = kt.OI,
                         OIChange = 0,
-                        BidPrice1 = 0, BidQty1 = 0, AskPrice1 = 0, AskQty1 = 0,
-                        TickTime = SessionClock.NowIst()
+                        BidPrice1 = 0,
+                        BidQty1 = 0,
+                        AskPrice1 = 0,
+                        AskQty1 = 0,
+                        TickTime = SessionClock.NowIst()   // LIVE: system IST time
                     };
-                    _tickQueue.Enqueue(data);
-                    OnLtp?.Invoke(tokenU, (double)t.LastPrice, t.Volume);
 
-                    var ctx = _contexts.GetOrAdd(tokenU, _ => new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
-                    if (tokenU == _underlyingToken)
-                    {
-                        var closed = ctx.ProcessTick((double)t.LastPrice, t.Volume);
-                        if (closed != null)
-                        {
-                            OnCandleClosed?.Invoke(null, new CandleEventArgs { InstrumentToken = (long)tokenU, InstrumentName = ctx.Name, Candle = closed });
-                            DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
+                    HandleTickCore(tdata, Guid.Empty, bypassRecordCheck: false);
 
-                            App.Current.Dispatcher.Invoke(() =>
-                            {
-                                if (App.Current.MainWindow is MainWindow mw)
-                                    mw.AddCandle(closed);
-                            });
-
-                            UnderlyingCandleCache.Put((long)tokenU, closed);
-
-                            if (tokenU == (uint)(Config.Current.Trading.UnderlyingToken ?? 256265))
-                            {
-                                var sig = ctx.EvaluateSignalsPositionAware_Conservative();
-                                if (sig == null) return;
-
-                                if (!SignalGate.ShouldEmitSignal(tokenU, sig.Type, sig.Time, Config.Current.Trading.DebounceCandles))
-                                    return;
-
-                                if (!Config.Current.Trading.AllowMultipleOpenPositions &&
-                                    OrderManager.HasOpenPositionForUnderlying(tokenU))
-                                {
-                                    AppendStatus($"[{sig.Time:HH:mm}] Suppressed {sig.Type}: position already open.");
-                                    return;
-                                }
-
-                                var optType = (sig.Type == SignalType.Buy) ? "CE" : "PE";
-                                var mapped = OptionMapper.ChooseATMOption(sig.Time, sig.Price, optType);
-                                if (mapped == null)
-                                {
-                                    AppendStatus($"[{sig.Time:HH:mm}] No ATM option found for {optType}.");
-                                    return;
-                                }
-
-                                var order = new OrderRecord
-                                {
-                                    OrderId = Guid.NewGuid(),
-                                    SignalId = Guid.NewGuid(),
-                                    ReplayId = Guid.Empty,
-                                    InstrumentToken = mapped.InstrumentToken,
-                                    InstrumentName = mapped.Tradingsymbol,
-                                    UnderlyingToken = Config.Current.Trading.UnderlyingToken ?? 256265,
-                                    UnderlyingPriceAtSignal = sig.Price,
-                                    Side = (sig.Type == SignalType.Buy) ? "BUY" : "SELL",
-                                    QuantityLots = 1,
-                                    Status = OrderStatus.Placed
-                                };
-                                OrderManager.CreateOrder(order);
-
-                                var simOrder = new SimOrder
-                                {
-                                    ReplayId = order.ReplayId,
-                                    InstrumentToken = (uint)mapped.InstrumentToken,
-                                    InstrumentName = mapped.Tradingsymbol,
-                                    UnderlyingToken = order.UnderlyingToken,
-                                    UnderlyingPrice = sig.Price,
-                                    Side = order.Side,
-                                    QuantityLots = order.QuantityLots,
-                                    PlacedAt = sig.Time,
-                                    Reason = "ConservativeA"
-                                };
-                                var sim = OrderSimulator.PlaceOrderNextTick(order.ReplayId, simOrder);
-                                OrderManager.AttachFill(order, sim);
-
-                                if (order.Status == OrderStatus.Open)
-                                    ExitManager.Track(order);
-
-                                AppendStatus($"[{sig.Time:HH:mm}] {sig.Type} → {mapped.Tradingsymbol} @ {order.EntryPrice:F2}");
-                            }
-
-                        }
-                    }
-
-                    var underlying = Config.Current.Trading.UnderlyingToken ?? 256265;
-                    if ((long)tokenU != underlying)
-                    {
-                        ExitManager.OnOptionTick(tokenU, (double)t.LastPrice, (DateTime)t.LastTradeTime);
-                    }
 
                 }
             };
@@ -201,26 +114,114 @@ namespace ZerodhaOxySocket
             _socket.Connect(_apiKey, _accessToken);
         }
 
-        private static (uint Token, string Name, double Price, string Note) MapSignalToOption(Signal s, double underlyingLtp)
+        // One canonical tick pipeline for BOTH live and replay
+        private static void HandleTickCore(TickData t, Guid replayId, bool bypassRecordCheck)
         {
-            int strike = (int)(System.Math.Round(underlyingLtp / 50.0) * 50);
-            string suffix = s.Type == SignalType.Buy ? "CE" : "PE";
-            string sym = $"NIFTY{strike}{suffix}";
-            var info = InstrumentHelper.FindLatestByTradingsymbol(sym);
-            if (info != null) return ((uint)info.InstrumentToken, info.Tradingsymbol, s.Price, $"Mapped->{info.Tradingsymbol}");
+            var tokenU = t.InstrumentToken;
 
-            var alt = InstrumentHelper.FindNearestOption("NIFTY", strike, suffix);
-            if (alt != null) return ((uint)alt.InstrumentToken, alt.Tradingsymbol, s.Price, $"Mapped->{alt.Tradingsymbol}");
+            // gate recording (live uses tick time; replay bypasses when requested)
+            if (!bypassRecordCheck)
+            {
+                if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity, t.TickTime))
+                    return;
+            }
 
-            return (_underlyingToken, "NIFTY", s.Price, "Fallback underlying");
+            // enqueue + event
+            _tickQueue.Enqueue(t);
+            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+
+            // context
+            var name = ResolveName(tokenU);
+            var ctx = _contexts.GetOrAdd(tokenU, _ =>
+                new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
+
+            // IMPORTANT: use the tick's time when updating candles
+            var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime);  // add overload if missing (see step 4)
+
+            // candle closed path
+            if (closed != null)
+            {
+                if (tokenU == _underlyingToken)
+                {
+                    OnCandleClosed?.Invoke(null, new CandleEventArgs
+                    {
+                        InstrumentToken = (long)tokenU,
+                        InstrumentName = ctx.Name,
+                        Candle = closed
+                    });
+                    DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
+
+                    // cache for ATR/exit
+                    UnderlyingCandleCache.Put((long)tokenU, closed);
+
+                    // conservative signal logic (same for live & replay)
+                    var sig = ctx.EvaluateSignalsPositionAware_Conservative();
+                    if (sig != null)
+                    {
+                        if (!SignalGate.ShouldEmitSignal(tokenU, sig.Type, sig.Time, Config.Current.Trading.DebounceCandles))
+                            return;
+
+                        if (!Config.Current.Trading.AllowMultipleOpenPositions &&
+                            OrderManager.HasOpenPositionForUnderlying(tokenU))
+                            return;
+
+                        var optType = (sig.Type == SignalType.Buy) ? "CE" : "PE";
+                        var mapped = OptionMapper.ChooseATMOption(sig.Time, sig.Price, optType);
+                        if (mapped != null)
+                        {
+                            // simulate order (works for live too until you wire real orders)
+                            var order = new OrderRecord
+                            {
+                                OrderId = Guid.NewGuid(),
+                                SignalId = Guid.NewGuid(),
+                                ReplayId = replayId,
+                                InstrumentToken = mapped.InstrumentToken,
+                                InstrumentName = mapped.Tradingsymbol,
+                                UnderlyingToken = _underlyingToken,
+                                UnderlyingPriceAtSignal = sig.Price,
+                                Side = (sig.Type == SignalType.Buy) ? "BUY" : "SELL",
+                                QuantityLots = 1,
+                                Status = OrderStatus.Placed
+                            };
+                            OrderManager.CreateOrder(order);
+
+                            var simOrder = new SimOrder
+                            {
+                                ReplayId = replayId,
+                                InstrumentToken = (uint)mapped.InstrumentToken,
+                                InstrumentName = mapped.Tradingsymbol,
+                                UnderlyingToken = order.UnderlyingToken,
+                                UnderlyingPrice = sig.Price,
+                                Side = order.Side,
+                                QuantityLots = order.QuantityLots,
+                                PlacedAt = sig.Time,
+                                Reason = "ConservativeA"
+                            };
+                            var sim = OrderSimulator.PlaceOrderNextTick(replayId, simOrder);
+                            OrderManager.AttachFill(order, sim);
+                            if (order.Status == OrderStatus.Open) ExitManager.Track(order);
+                        }
+                    }
+                }
+            }
+
+            // feed exits for option ticks
+            if ((long)tokenU != (_underlyingToken))
+                ExitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
         }
 
-        private static bool ShouldRecord(uint token, double price, long vol, long lastQty)
+
+        private static bool ShouldRecord(
+    uint token, double price, long vol, long lastQty,
+    DateTime tickIst, bool allowAfterHours = false)
         {
-            if (!SessionClock.IsRegularSessionNow()) return false;
+            if (!allowAfterHours && !SessionClock.IsRegularSessionAt(tickIst))
+                return false;
+
             var last = _lastSeen.GetOrAdd(token, _ => (double.NaN, -1));
             bool unchanged = last.price == price && last.vol == vol;
-            if (unchanged && lastQty <= 0) return false;
+
+            if (unchanged && lastQty <= 0) return false; // stale/no-trade tick
             _lastSeen[token] = (price, vol);
             return true;
         }
@@ -314,49 +315,10 @@ namespace ZerodhaOxySocket
             _socket?.Dispose();
         }
 
-        public static void ProcessReplayTick(TickData t, Guid replayId)
+        public static void ProcessReplayTick(TickData t, Guid replayId, bool isActive)
         {
-            var tokenU = t.InstrumentToken;
-            if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity))
-                return;
-
-            var name = ResolveName(tokenU);
-            _tickQueue.Enqueue(t);
-            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
-
-            var ctx = _contexts.GetOrAdd(tokenU, _ => new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
-            // important: pass the tick's TickTime into ProcessTick so InstrumentContext uses it
-            var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime); // you may need to add overload to InstrumentContext: ProcessTickWithTime
-            if (closed != null && tokenU == (uint)(Config.Current.Trading.UnderlyingToken ?? 256265))
-            {
-                OnCandleClosed?.Invoke(null, new CandleEventArgs { InstrumentToken = (long)tokenU, InstrumentName = ctx.Name, Candle = closed });
-                DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
-
-                var sig = ctx.EvaluateSignalsPositionAware();
-                if (sig != null)
-                {
-                    // map to an option (deterministic)
-                    var mapped = OptionMapper.ChooseATMOption(closed.Time, t.LastPrice, sig.Type == SignalType.Buy ? "CE" : "PE");
-                    if (mapped != null)
-                    {
-                        // create order and simulate fill
-                        var order = new SimOrder
-                        {
-                            ReplayId = replayId,
-                            InstrumentToken = (uint)mapped.InstrumentToken,
-                            InstrumentName = mapped.Tradingsymbol,
-                            UnderlyingToken = Config.Current.Trading.UnderlyingToken ?? 256265,
-                            UnderlyingPrice = t.LastPrice,
-                            Side = sig.Type == SignalType.Buy ? "BUY" : "SELL",
-                            QuantityLots = 1,
-                            PlacedAt = closed.Time,
-                            Reason = "UnderlyingSignal-Replay"
-                        };
-                        var sim = OrderSimulator.PlaceOrderNextTick(replayId, order);
-                        // record mapping if desired, raise events, etc.
-                    }
-                }
-            }
+            // Replay must use the *tick* time and bypass out-of-session gates
+            HandleTickCore(t, replayId, bypassRecordCheck: true);
         }
 
     }

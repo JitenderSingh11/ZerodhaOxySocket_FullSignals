@@ -21,6 +21,10 @@ namespace ZerodhaOxySocket
 
         public event Action<DateTime> OnReplayTimeAdvance; // optional for UI updates
 
+        private bool IsRunning => _task != null && !_task.IsCompleted;
+
+        public bool IsActive => IsRunning;
+
         public ReplayEngine(ReplayConfig cfg) { _cfg = cfg; }
 
         public void Start()
@@ -58,7 +62,7 @@ namespace ZerodhaOxySocket
 
                 // Process tick through the same pipeline used by live feed.
                 // Important: ProcessReplayTick must treat the tick.TickTime as the "current time"
-                TickHub.ProcessReplayTick(tick, _cfg.ReplayId);
+                TickHub.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
 
                 lastTickTime = tick.TickTime;
                 OnReplayTimeAdvance?.Invoke(lastTickTime.Value);
