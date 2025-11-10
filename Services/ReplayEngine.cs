@@ -43,6 +43,9 @@ namespace ZerodhaOxySocket
         private void RunLoop(CancellationToken ct)
         {
             DateTime? lastTickTime = null;
+
+            TickHub.ReplayInit(_cfg);
+
             foreach (var tick in DataAccess.StreamTicksRange(_cfg.Tokens, _cfg.Start, _cfg.End))
             {
                 if (ct.IsCancellationRequested) break;

@@ -33,7 +33,8 @@ CREATE TABLE dbo.Ticks(
     OIChange BIGINT NULL,
     BidQty1 BIGINT NULL, BidPrice1 DECIMAL(18,2) NULL,
     AskPrice1 DECIMAL(18,2) NULL, AskQty1 BIGINT NULL,
-    TickTime DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+    TickTime DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    DATECREATED DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 CREATE INDEX IX_Ticks_TokenTime ON dbo.Ticks(InstrumentToken, TickTime);
 END");
@@ -49,7 +50,8 @@ CREATE TABLE dbo.Candles(
     HighPrice DECIMAL(18,2) NOT NULL,
     LowPrice DECIMAL(18,2) NOT NULL,
     ClosePrice DECIMAL(18,2) NOT NULL,
-    Volume BIGINT NULL
+    Volume BIGINT NULL,
+    DATECREATED DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 CREATE INDEX IX_Candles_TokenIntervalTime ON dbo.Candles(InstrumentToken, Interval, CandleTime);
 END");
@@ -100,7 +102,7 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
             }
 
             public static void InsertCandle(Candle c, uint token, string name, bool isPaper = true)
-            {
+           {
                 using var conn = new SqlConnection(_cs);
                 conn.Open();
 
@@ -122,28 +124,29 @@ VALUES(@token, @name, @type, @price, @note, @createdAt)",
                     new { token = (long)token, name, type = s.Type.ToString(), price = s.Price, note = s.Note ?? "", createdAt = SessionClock.NowIst() });
             }
 
-            public static System.Collections.Generic.List<Candle> LoadRecentCandlesAggregated(long token, int bars, int tfMinutes)
+            public static System.Collections.Generic.List<Candle> LoadRecentCandlesAggregated(long token, int bars, int tfMinutes, DateTime startDate)
+
             {
                 const string sql = @"
 WITH G AS (
   SELECT
     DATEADD(MINUTE, DATEDIFF(MINUTE, 0, CandleTime)/@tf*@tf, 0) AS BarTime,
     CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume
-  FROM dbo.Candles
-  WHERE InstrumentToken = @tok AND Interval='1m'
+  FROM dbo.CandlesHistory
+  WHERE InstrumentToken = @tok AND Interval='1m' AND CandleTime < @startDate
 )
 SELECT TOP (@bars)
-  BarTime AS CandleTime,
-  (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS OpenPrice,
-  MAX(HighPrice) AS HighPrice,
-  MIN(LowPrice)  AS LowPrice,
-  (SELECT TOP 1 ClosePrice FROM G g3 WHERE g3.BarTime = g.BarTime ORDER BY CandleTime DESC) AS ClosePrice,
-  SUM(Volume)    AS Volume
+  BarTime AS [Time],
+  (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS [Open],
+  MAX(HighPrice) AS [High],
+  MIN(LowPrice)  AS [Low],
+  (SELECT TOP 1 ClosePrice FROM G g3 WHERE g3.BarTime = g.BarTime ORDER BY CandleTime DESC) AS [Close],
+  SUM(Volume)    AS [Volume]
 FROM G g
 GROUP BY BarTime
-ORDER BY BarTime DESC;";
+ORDER BY Time DESC;";
                 using var conn = new SqlConnection(_cs);
-                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes }).ToList();
+                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes, startDate }).ToList();
                 rows.Reverse();
                 return rows;
             }

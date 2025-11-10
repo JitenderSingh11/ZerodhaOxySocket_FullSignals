@@ -56,7 +56,7 @@ namespace ZerodhaOxySocket
 
             int tf = Config.Current.Trading.TimeframeMinutes;
             int seedBars = Config.Current.Trading.SeedBars;
-            var seed = DataAccess.LoadRecentCandlesAggregated(cfgTok, seedBars, tf);
+            var seed = DataAccess.LoadRecentCandlesAggregated(cfgTok, seedBars, tf, DateTime.Now);
             var name = "NIFTY";
             var ctx = new InstrumentContext(_underlyingToken, name, TimeSpan.FromMinutes(tf), seed);
             _contexts[_underlyingToken] = ctx;
@@ -64,14 +64,19 @@ namespace ZerodhaOxySocket
             StartWriter();
         }
 
-        private static void AppendStatus(string message)
+        public static void ReplayInit(ReplayConfig replayConfig)
         {
-            try
-            {
-                OnStatus?.Invoke(message);   // if your TickHub already exposes this event
-            }
-            catch { /* no-op */ }
-            System.Diagnostics.Debug.WriteLine(message);
+            Config.Load(AppDomain.CurrentDomain.BaseDirectory);
+
+            long cfgTok = Config.Current.Trading.UnderlyingToken ?? 256265;
+            _underlyingToken = (uint)cfgTok;
+
+            int tf = Config.Current.Trading.TimeframeMinutes;
+            int seedBars = Config.Current.Trading.SeedBars;
+            var seed = DataAccess.LoadRecentCandlesAggregated(cfgTok, seedBars, tf, replayConfig.Start);
+            var name = ResolveName(_underlyingToken);
+            var ctx = new InstrumentContext(_underlyingToken, name, TimeSpan.FromMinutes(tf), seed);
+            _contexts[_underlyingToken] = ctx;
         }
 
 
@@ -105,7 +110,7 @@ namespace ZerodhaOxySocket
                         TickTime = SessionClock.NowIst()   // LIVE: system IST time
                     };
 
-                    HandleTickCore(tdata, Guid.Empty, bypassRecordCheck: false);
+                    HandleTickCore(tdata, Guid.Empty, IsLive: true);
 
 
                 }
@@ -115,19 +120,23 @@ namespace ZerodhaOxySocket
         }
 
         // One canonical tick pipeline for BOTH live and replay
-        private static void HandleTickCore(TickData t, Guid replayId, bool bypassRecordCheck)
+        private static void HandleTickCore(TickData t, Guid replayId, bool IsLive = false)
         {
             var tokenU = t.InstrumentToken;
 
             // gate recording (live uses tick time; replay bypasses when requested)
-            if (!bypassRecordCheck)
+            if (IsLive)
             {
                 if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity, t.TickTime))
                     return;
             }
 
-            // enqueue + event
-            _tickQueue.Enqueue(t);
+            if (IsLive)
+            {
+                // enqueue + event
+                _tickQueue.Enqueue(t);
+            }
+
             OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
 
             // context
@@ -149,7 +158,9 @@ namespace ZerodhaOxySocket
                         InstrumentName = ctx.Name,
                         Candle = closed
                     });
-                    DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
+
+                    if (IsLive)
+                        DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
 
                     // cache for ATR/exit
                     UnderlyingCandleCache.Put((long)tokenU, closed);
@@ -317,8 +328,7 @@ namespace ZerodhaOxySocket
 
         public static void ProcessReplayTick(TickData t, Guid replayId, bool isActive)
         {
-            // Replay must use the *tick* time and bypass out-of-session gates
-            HandleTickCore(t, replayId, bypassRecordCheck: true);
+            HandleTickCore(t, replayId, IsLive: false);
         }
 
     }

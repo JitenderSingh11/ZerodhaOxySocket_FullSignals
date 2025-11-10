@@ -64,6 +64,7 @@ namespace ZerodhaOxySocket
 
             LoadConfig();
             UpdateMenuState();
+
             _ = InstrumentCatalog.EnsureTodayAsync()
     .ContinueWith(t =>
     {
@@ -75,6 +76,18 @@ namespace ZerodhaOxySocket
                 AppendLog($"Instrument snapshot OK for {DateTime.Today:yyyy-MM-dd} ({t.Result.Count} rows).");
         });
     });
+
+            CandleHistoryService.Initialize(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString, _config.SubscribedInstruments)
+                .ContinueWith(t =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (t.Exception != null)
+                        AppendLog($"Candles History snapshot failed: {t.Exception.GetBaseException().Message}");
+                    else
+                        AppendLog($"Candles History snapshot OK for {DateTime.Today:yyyy-MM-dd}.");
+                });
+            });
 
 
             TickHub.OnStatus += s => Dispatcher.Invoke(() => txtStatus.Text = s);
@@ -141,6 +154,18 @@ namespace ZerodhaOxySocket
 
             TickHub.Init(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString);
             TickHub.Connect();
+
+            CandleHistoryService.Initialize(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString, _config.SubscribedInstruments)
+                .ContinueWith(t =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (t.Exception != null)
+                            AppendLog($"Candles History snapshot failed: {t.Exception.GetBaseException().Message}");
+                        else
+                            AppendLog($"Candles History snapshot OK for {DateTime.Today:yyyy-MM-dd}.");
+                    });
+                });
 
             var csv = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
             foreach (var auto in _config.AutoSubscribe)

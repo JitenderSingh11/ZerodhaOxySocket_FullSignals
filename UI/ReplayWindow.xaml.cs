@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Reflection.Metadata;
 using System.Windows;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace ZerodhaOxySocket
 {
@@ -36,6 +38,7 @@ namespace ZerodhaOxySocket
             };
 
             _engine.Start();
+            tbLog.Text = "";
             tbLog.Text += $"Started replay {start:yyyy-MM-dd HH:mm:ss} -> {end:yyyy-MM-dd HH:mm:ss} scale={scale}\\n";
         }
 
