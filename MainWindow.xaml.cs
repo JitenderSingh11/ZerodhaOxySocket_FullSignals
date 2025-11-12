@@ -415,5 +415,12 @@ namespace ZerodhaOxySocket
             }
         }
 
+        private void OpenCandleHistoryWindow(object sender, RoutedEventArgs e)
+        {
+            var w = new CandleHistoryWindow { Owner = this };
+            w.ShowDialog();
+        }
+
+
     }
 }

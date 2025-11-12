@@ -1,0 +1,66 @@
+﻿<Window x:Class="ZerodhaOxySocket.CandleHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Candle History Fetch" Height="360" Width="720"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="Instrument Token:" VerticalAlignment="Center" Width="120"/>
+            <TextBox x:Name="TxtInstrumentToken" Width="140" Margin="4,0,12,0"/>
+            <TextBlock Text="Timeframe (min):" VerticalAlignment="Center" Width="120"/>
+            <ComboBox x:Name="CmbTf" Width="80" SelectedIndex="0">
+                <ComboBoxItem Content="minute"/>
+                <ComboBoxItem Content="3minute"/>
+                <ComboBoxItem Content="5minute"/>
+                <ComboBoxItem Content="10minute"/>
+                <ComboBoxItem Content="15minute"/>
+                <ComboBoxItem Content="30minute"/>
+                <ComboBoxItem Content="60minute"/>
+                <ComboBoxItem Content="day"/>
+            </ComboBox>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="1" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Start:" VerticalAlignment="Center" Width="50"/>
+                <DatePicker x:Name="DpStartDate" Width="140" />
+                <TextBox x:Name="TxtStartTime" Width="90" Margin="6,0,12,0" VerticalContentAlignment="Center" Text="09:15:00"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="12,0,0,0">
+                <TextBlock Text="End:" VerticalAlignment="Center" Width="35"/>
+                <DatePicker x:Name="DpEndDate" Width="140" />
+                <TextBox x:Name="TxtEndTime" Width="90" Margin="6,0,0,0" VerticalContentAlignment="Center" Text="15:30:00"/>
+            </StackPanel>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="2" Margin="0,0,0,8">
+            <Button x:Name="BtnFetch" Content="Fetch and Upsert" Width="120" Click="BtnFetch_Click"/>
+            <Button x:Name="BtnCancel" Content="Cancel" Width="90" Margin="8,0,0,0" Click="BtnCancel_Click" IsEnabled="False"/>
+            <TextBlock x:Name="TxtStatus" Margin="12,3,0,0" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <ProgressBar x:Name="PgBar" Height="18" Minimum="0" Maximum="100" Grid.Row="0"/>
+            <TextBox x:Name="TxtLog" Grid.Row="1" Margin="0,8,0,0" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                     AcceptsReturn="True" IsReadOnly="True" FontFamily="Consolas" FontSize="12" />
+        </Grid>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+            <Button Content="Close" Width="80" Click="BtnClose_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

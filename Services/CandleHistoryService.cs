@@ -6,6 +6,7 @@ using System.Data.SqlClient;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ZerodhaOxySocket
@@ -15,6 +16,16 @@ namespace ZerodhaOxySocket
         private static string _connectionString; // Your DB connection string
         private static List<uint> _niftyInstrumentToken; // NIFTY token (update accordingly)
         private static Kite _kiteClient;
+
+        public class ProgressReport
+        {
+            public int Percent { get; set; }
+            public int Processed { get; set; }
+            public int Total { get; set; }
+            public int CurrentBatch { get; set; }
+            public int TotalBatches { get; set; }
+            public string Message { get; set; }
+        }
 
         public static Task Initialize(string apiKey, string accessToken, string connString, List<SubscribedInstrument> subscribedInstruments)
         {
@@ -188,6 +199,74 @@ INSERT INTO CandlesHistory (InstrumentToken, InstrumentName, Interval, CandleTim
             }
             catch { }
             return token.ToString();
+        }
+
+        /// <summary>
+        /// Fetches historical 1-minute candles from Kite and upserts into CandleHistory table
+        /// for the specified token between from->to. Batches upserts and reports progress.
+        /// </summary>
+        public static async Task FetchAndUpsertRangeAsync(uint instrumentToken, DateTime from, DateTime to, string targetTfMinutes,
+            IProgress<ProgressReport> progress = null, CancellationToken ct = default)
+        {
+            // We'll fetch raw 1-minute candles and then (optionally) aggregate to tfMinutes (if needed)
+            // For simplicity we use existing GetHistoricalCandles-like logic in the service.
+            // If your original service used KiteConnect.KiteConnect instance, reuse it here (ensure tokens set).
+
+            // Example: chunk the fetch into 1-day intervals to avoid huge responses
+            var totalList = new List<CandleData>();
+            var cursor = from;
+            var daySpan = TimeSpan.FromDays(1);
+
+            while (cursor < to)
+            {
+                ct.ThrowIfCancellationRequested();
+                var endChunk = cursor.Add(daySpan);
+                if (endChunk > to) endChunk = to;
+
+                progress?.Report(new ProgressReport { Percent = 0, Processed = totalList.Count, Total = -1, Message = $"Fetching {cursor:yyyy-MM-dd} to {endChunk:yyyy-MM-dd}" });
+
+                // You must implement GetHistoricalCandlesFromKite or reuse the existing call in your class
+                var chunk = await GetHistoricalCandles((uint)instrumentToken, cursor, endChunk, targetTfMinutes);
+                if (chunk != null && chunk.Count > 0) totalList.AddRange(chunk);
+
+                progress?.Report(new ProgressReport { Percent = 0, Processed = totalList.Count, Total = -1, Message = $"Fetched {chunk?.Count ?? 0} candles" });
+
+                cursor = endChunk;
+                await Task.Delay(200, ct); // short delay to be nice (adjust or remove based on rate)
+            }
+
+            ct.ThrowIfCancellationRequested();
+
+            // If targetTfMinutes > 1, aggregate 1m to targetTf server-side or in-memory. For now assume we store 1m in CandleHistory.
+            // We'll upsert the 1m candles into CandleHistory in batches.
+
+            int batchSize = 1000;
+            int total = totalList.Count;
+            int batches = Math.Max(1, (int)Math.Ceiling(total / (double)batchSize));
+            int processed = 0;
+
+            for (int bi = 0; bi < batches; bi++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var batch = totalList.Skip(bi * batchSize).Take(batchSize).ToList();
+
+                // Upsert batch into DB. Implement UpsertCandleHistoryBatch to perform efficient set-based upsert.
+                // If you don't have MERGE, you can insert with WHERE NOT EXISTS using table-valued parameter or temporary table.
+                InsertCandlesInBatches(batch);
+
+                processed += batch.Count;
+                int percent = (int)(processed * 100.0 / Math.Max(1, total));
+                progress?.Report(new ProgressReport
+                {
+                    Percent = percent,
+                    Processed = processed,
+                    Total = total,
+                    CurrentBatch = bi + 1,
+                    TotalBatches = batches,
+                    Message = $"Upserted batch {bi + 1}/{batches} ({batch.Count} rows)"
+                });
+                await Task.Delay(50, ct);
+            }
         }
     }
 
