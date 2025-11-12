@@ -151,6 +151,36 @@ ORDER BY Time DESC;";
                 return rows;
             }
 
+
+        public static List<Candle> LoadAggregatedCandles(long token, DateTime from, DateTime to, int tfMinutes)
+        {
+            const string sql = @"
+WITH G AS (
+  SELECT
+    InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume,
+    DATEADD(MINUTE, DATEDIFF(MINUTE, 0, CandleTime)/@tf*@tf, 0) AS BarTime
+  FROM dbo.CandlesHistory
+  WHERE InstrumentToken = @tok
+    AND Interval='1m'
+    AND CandleTime BETWEEN @from AND @to
+)
+SELECT
+  BarTime AS [Time],
+  (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS [Open],
+  MAX(HighPrice) AS [High],
+  MIN(LowPrice) AS [Low],
+  (SELECT TOP 1 ClosePrice FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime DESC) AS [Close],
+  SUM(Volume) AS [Volume]
+FROM G g
+GROUP BY BarTime
+ORDER BY [Time];
+";
+
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            return conn.Query<Candle>(sql, new { tok = token, from, to, tf = tfMinutes }).ToList();
+        }
+
         public static void SaveInstrumentSnapshotToDb(DateTime snapshotDate, IEnumerable<InstrumentInfo> instruments)
         {
             using var conn = new SqlConnection(_cs);
@@ -238,6 +268,34 @@ ORDER BY TickTime ASC";
             };
         }
 
+        public static List<TickData> GetTicksRange(DateTime start, DateTime end)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var sql = @"
+SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
+       OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
+FROM dbo.Ticks
+WHERE TickTime BETWEEN @s AND @e
+ORDER BY TickTime ASC";
+            return conn.Query<TickData>(sql, new { s = start, e = end }).ToList();
+        }
+
+
+        public static List<TickData> GetTicksRangeForTokens(long[] tokens, DateTime start, DateTime end)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            var sql = @"
+SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
+       OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
+FROM dbo.Ticks
+WHERE TickTime BETWEEN @s AND @e
+  AND InstrumentToken IN @tokens
+ORDER BY TickTime ASC";
+            return conn.Query<TickData>(sql, new { s = start, e = end, tokens }).ToList();
+        }
+
         public static IEnumerable<TickData> StreamTicksRange(long[] tokens, DateTime start, DateTime end)
         {
             using var conn = new SqlConnection(_cs);
@@ -246,12 +304,10 @@ ORDER BY TickTime ASC";
 SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
        OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
 FROM dbo.Ticks
-WHERE InstrumentToken IN ({string.Join(",", tokens.Select((_, i) => "@t" + i))})
-  AND TickTime BETWEEN @s AND @e
+WHERE TickTime BETWEEN @s AND @e
 ORDER BY TickTime ASC";
 
             var dp = new DynamicParameters();
-            for (int i = 0; i < tokens.Length; i++) dp.Add("@t" + i, tokens[i]);
             dp.Add("@s", start);
             dp.Add("@e", end);
 
@@ -312,7 +368,7 @@ VALUES(@replay, @token, @name, @utok, @uprice, @side, @lots, @et, @ep, @xt, @xp,
                     name = trade.InstrumentName,
                     utok = (long?)trade.UnderlyingToken,
                     uprice = trade.UnderlyingPrice,
-                    side = trade.Side,
+                    side = trade.TradeSide,
                     lots = trade.QuantityLots,
                     et = trade.EntryTime,
                     ep = trade.EntryPrice,

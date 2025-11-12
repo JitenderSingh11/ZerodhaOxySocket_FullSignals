@@ -26,34 +26,6 @@ namespace ZerodhaOxySocket
             }
         }
 
-        public Candle ProcessTick(double ltp, long dayVolume)
-        {
-            var bucketStart = SessionClock.FloorToBucketIst(_timeframe);
-
-            if (_currentCandleTime == default || bucketStart != _currentCandleTime)
-            {
-                Candle closed = null;
-                if (_currentCandleTime != default)
-                {
-                    closed = new Candle { Time = _currentCandleTime, Open = _open, High = _high, Low = _low, Close = _close, Volume = _volume };
-                    _candles.Add(closed);
-                    if (_candles.Count > 1000) _candles.RemoveAt(0);
-                }
-                _currentCandleTime = bucketStart;
-                _open = _high = _low = _close = ltp;
-                _volume = 0;
-                return closed;
-            }
-            else
-            {
-                _close = ltp;
-                _high = Math.Max(_high, ltp);
-                _low = Math.Min(_low, ltp);
-                _volume += 0;
-                return null;
-            }
-        }
-
         public IReadOnlyList<Candle> GetCandles() => _candles.AsReadOnly();
 
 
@@ -85,6 +57,13 @@ namespace ZerodhaOxySocket
                 _volume += 0;
                 return null;
             }
+        }
+
+        public void AddCandle(Candle c)
+        {
+            _candles.Add(c);
+            if (_candles.Count > 1000) _candles.RemoveAt(0);
+            _currentCandleTime = c.Time;
         }
 
         public SignalResult EvaluateSignalsPositionAware_Conservative()

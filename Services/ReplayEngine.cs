@@ -1,9 +1,13 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
+using static ZerodhaOxySocket.ReplayWindow;
 
 namespace ZerodhaOxySocket
 {
+
+    public enum ReplayMode { Tick, Candle }
+
     public class ReplayConfig
     {
         public DateTime Start { get; set; }
@@ -11,6 +15,9 @@ namespace ZerodhaOxySocket
         public long[] Tokens { get; set; } = Array.Empty<long>();
         public double TimeScale { get; set; } = 10.0; // 1 = real-time, >1 = faster
         public Guid ReplayId { get; } = Guid.NewGuid();
+
+        public ReplayMode Mode { get; set; } = ReplayMode.Candle; // default
+        public int CandleTfMinutes { get; set; } = 5; // used when Mode == Candle
     }
 
     public class ReplayEngine
@@ -42,34 +49,61 @@ namespace ZerodhaOxySocket
 
         private void RunLoop(CancellationToken ct)
         {
-            DateTime? lastTickTime = null;
 
             TickHub.ReplayInit(_cfg);
 
-            foreach (var tick in DataAccess.StreamTicksRange(_cfg.Tokens, _cfg.Start, _cfg.End))
+            if (_cfg.Mode == ReplayMode.Tick)
             {
-                if (ct.IsCancellationRequested) break;
+                RunAsTicks(_cfg);
+            }
+            else
+            {
+                RunAsCandles(_cfg);
+            }
 
-                // time scaling/waiting
-                if (lastTickTime.HasValue)
+        }
+
+        private void RunAsTicks(ReplayConfig cfg)
+        {
+            foreach (var token in cfg.Tokens)
+            {
+                DateTime? lastTickTime = null;
+
+                var ticksData = DataAccess.GetTicksRange(_cfg.Start, _cfg.End);
+                foreach (var tick in ticksData)
                 {
-                    var delta = tick.TickTime - lastTickTime.Value;
-                    if (delta < TimeSpan.Zero) delta = TimeSpan.Zero;
-                    if (_cfg.TimeScale <= 1.0) { Thread.Sleep(delta); }
-                    else
-                    {
-                        var scaled = TimeSpan.FromTicks((long)(delta.Ticks / _cfg.TimeScale));
-                        if (scaled > TimeSpan.Zero) Thread.Sleep(scaled);
-                    }
+
+                 
+
+                    // Process tick through the same pipeline used by live feed.
+                    // Important: ProcessReplayTick must treat the tick.TickTime as the "current time"
+                    TickHub.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
+
+                    lastTickTime = tick.TickTime;
+                    OnReplayTimeAdvance?.Invoke(lastTickTime.Value);
                 }
-
-                // Process tick through the same pipeline used by live feed.
-                // Important: ProcessReplayTick must treat the tick.TickTime as the "current time"
-                TickHub.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
-
-                lastTickTime = tick.TickTime;
-                OnReplayTimeAdvance?.Invoke(lastTickTime.Value);
             }
         }
+
+        private void RunAsCandles(ReplayConfig cfg)
+        {
+            foreach (var token in cfg.Tokens)
+            {
+                // load aggregated candles for this token
+                var candles = DataAccess.LoadAggregatedCandles(token, cfg.Start, cfg.End, cfg.CandleTfMinutes);
+
+                DateTime? lastTime = null;
+                foreach (var candle in candles)
+                {
+               
+                    // Call the TickHub's replay-candle handler
+                    TickHub.ProcessReplayCandle((uint)token, candle, cfg.ReplayId);
+
+                    lastTime = candle.Time;
+                    OnReplayTimeAdvance?.Invoke(candle.Time);
+                }
+            }
+        }
+
     }
 }

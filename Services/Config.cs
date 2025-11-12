@@ -6,30 +6,30 @@ namespace ZerodhaOxySocket
 {
     public sealed class TradingSettings
     {
-        public int TimeframeMinutes { get; set; } = 5;
-        public long? UnderlyingToken { get; set; } = 256265;
-        public bool AllowMultipleOpenPositions { get; set; } = false;
-        public int DebounceCandles { get; set; } = 2;
+        public int TimeframeMinutes { get; set; }
+        public long? UnderlyingToken { get; set; }
+        public bool AllowMultipleOpenPositions { get; set; }
+        public int DebounceCandles { get; set; }
 
-        public int AtrPeriod { get; set; } = 14;
-        public double AtrStopMult { get; set; } = 1.5;
-        public double AtrTrailMult { get; set; } = 2.0;
+        public int AtrPeriod { get; set; }
+        public double AtrStopMult { get; set; }
+        public double AtrTrailMult { get; set; }
 
-        public int FastEma { get; set; } = 20;
-        public int SlowEma { get; set; } = 50;
-        public int RsiPeriod { get; set; } = 14;
-        public double RsiBuyBelow { get; set; } = 55;
-        public double RsiSellAbove { get; set; } = 45;
+        public int FastEma { get; set; }
+        public int SlowEma { get; set; }
+        public int RsiPeriod { get; set; }
+        public double RsiBuyBelow { get; set; }
+        public double RsiSellAbove { get; set; }
 
-        public string EodExit { get; set; } = "15:20:00";
-        public double MinBodyPct { get; set; } = 0.15;
-        public double MinRangeAtr { get; set; } = 0.6;
+        public string EodExit { get; set; }
+        public double MinBodyPct { get; set; }
+        public double MinRangeAtr { get; set; }
 
         /// <summary>
         /// Minimum historical bars required before evaluating signals.
         /// Used to warm up indicators.
         /// </summary>
-        public int SeedBars { get; set; } = 200;
+        public int SeedBars { get; set; }
     }
 
     public static class Config
@@ -86,7 +86,8 @@ namespace ZerodhaOxySocket
         public List<AutoSubConfig> AutoSubscribe { get; set; } = new() { new AutoSubConfig { Symbol = "NIFTY", Range = 10 } };
         public CandleBuilderConfig CandleBuilder { get; set; } = new();
 
-        public TradingSettings Trading { get; set; } = new TradingSettings();
+        [JsonProperty("Trading")]
+        public TradingSettings Trading { get; set; } = new();
     }
     
     public class SubscribedInstrument

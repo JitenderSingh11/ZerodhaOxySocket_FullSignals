@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace ZerodhaOxySocket
@@ -55,6 +56,11 @@ namespace ZerodhaOxySocket
         public static int GetOpenOrdersCountForUnderlying(long underlyingToken)
         {
             return _orders.Values.Count(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Open);
+        }
+
+        public static List<OrderRecord> GetOpenOrdersForUnderlying(long underlyingToken)
+        {
+            return _orders.Values.Where(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Open).ToList();
         }
 
         public static double GetFavorablePrice(Guid orderId, double lastPrice, string side)

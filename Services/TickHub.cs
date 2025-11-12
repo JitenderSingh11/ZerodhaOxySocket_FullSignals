@@ -120,7 +120,7 @@ namespace ZerodhaOxySocket
         }
 
         // One canonical tick pipeline for BOTH live and replay
-        private static void HandleTickCore(TickData t, Guid replayId, bool IsLive = false)
+        private static void HandleTickCore(TickData t, Guid replayId, bool IsLive)
         {
             var tokenU = t.InstrumentToken;
 
@@ -147,6 +147,15 @@ namespace ZerodhaOxySocket
             // IMPORTANT: use the tick's time when updating candles
             var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime);  // add overload if missing (see step 4)
 
+            CandleEvaluation(ctx, closed, tokenU, IsLive, replayId);
+
+            // feed exits for option ticks
+            if ((long)tokenU != (_underlyingToken))
+                ExitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
+        }
+
+        private static void CandleEvaluation(InstrumentContext? ctx,Candle? closed, uint tokenU, bool IsLive, Guid replayId)
+        {
             // candle closed path
             if (closed != null)
             {
@@ -190,7 +199,8 @@ namespace ZerodhaOxySocket
                                 InstrumentName = mapped.Tradingsymbol,
                                 UnderlyingToken = _underlyingToken,
                                 UnderlyingPriceAtSignal = sig.Price,
-                                Side = (sig.Type == SignalType.Buy) ? "BUY" : "SELL",
+                                //Side = (sig.Type == SignalType.Buy) ? "BUY" : "SELL",
+                                Side = "BUY",
                                 QuantityLots = 1,
                                 Status = OrderStatus.Placed
                             };
@@ -215,10 +225,6 @@ namespace ZerodhaOxySocket
                     }
                 }
             }
-
-            // feed exits for option ticks
-            if ((long)tokenU != (_underlyingToken))
-                ExitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
         }
 
 
@@ -330,6 +336,40 @@ namespace ZerodhaOxySocket
         {
             HandleTickCore(t, replayId, IsLive: false);
         }
+
+        public static void ProcessReplayCandle(uint instrumentToken, Candle closed, Guid replayId)
+        {
+
+            var instrumentName = ResolveName(instrumentToken);
+
+            var ctx = _contexts.GetOrAdd(instrumentToken, _ =>
+                new InstrumentContext(instrumentToken, instrumentName, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
+
+            ctx.AddCandle(closed); // seed the closed candle    
+
+            CandleEvaluation(ctx, closed, instrumentToken, IsLive: false, replayId);
+
+            var ticks = new List<TickData>();
+     
+            if (OrderManager.HasOpenPositionForUnderlying(instrumentToken))
+            {
+                foreach (var o in OrderManager.GetOpenOrdersForUnderlying(instrumentToken))
+                {
+                    var ticksData = DataAccess.GetTicksRangeForTokens(
+                                         [o.InstrumentToken],
+                                         closed.Time,
+                                         closed.Time.AddMinutes(Config.Current.Trading.TimeframeMinutes));
+                    ticks.AddRange(ticksData);
+                }
+            }
+
+            foreach(var tick in ticks)
+            { 
+                if (instrumentToken != (tick.InstrumentToken))
+                    ExitManager.OnOptionTick(tick.InstrumentToken, tick.LastPrice, tick.TickTime);
+            }
+        }
+
 
     }
 }

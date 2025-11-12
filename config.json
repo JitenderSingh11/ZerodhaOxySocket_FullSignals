@@ -3,12 +3,6 @@
   "ApiSecret": "admyh3xb4o4zafmgvpewi38vd3n676rp",
   "AccessToken": "",
   "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;",
-  "Trading": {
-    "TimeframeMinutes": 5,
-    "SeedBars": 200,
-    "OptionSpread": 10,
-    "UnderlyingToken": 256265
-  },
 
   "DefaultTimeframeMinutes": 1,
   "PaperTrade": true,
@@ -41,28 +35,28 @@
       "Username": "",
       "Password": "",
       "To": ""
-    },
-    "Trading": {
-      "TimeframeMinutes": 5,
-      "UnderlyingToken": 256265,
-      "AllowMultipleOpenPositions": false,
-      "DebounceCandles": 2,
-
-      "AtrPeriod": 14,
-      "AtrStopMult": 1.5,
-      "AtrTrailMult": 2.0,
-
-      "FastEma": 20,
-      "SlowEma": 50,
-      "RsiPeriod": 14,
-      "RsiBuyBelow": 55,
-      "RsiSellAbove": 45,
-
-      "EodExit": "15:20:00",
-      "MinBodyPct": 0.15,
-      "MinRangeAtr": 0.6,
-      "SeedBars": 200
     }
+  },
+  "Trading": {
+    "TimeframeMinutes": 5,
+    "UnderlyingToken": 256265,
+    "AllowMultipleOpenPositions": false,
+    "DebounceCandles": 1,
+    "OptionSpread": 10,
 
+    "AtrPeriod": 14,
+    "AtrStopMult": 1.2,
+    "AtrTrailMult": 1.5,
+
+    "FastEma": 12,
+    "SlowEma": 26,
+    "RsiPeriod": 9,
+    "RsiBuyBelow": 65,
+    "RsiSellAbove": 35,
+
+    "EodExit": "15:20:00",
+    "MinBodyPct": 0.08,
+    "MinRangeAtr": 0.4,
+    "SeedBars": 200
   }
 }

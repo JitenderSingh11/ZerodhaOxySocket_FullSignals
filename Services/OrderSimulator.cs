@@ -10,7 +10,7 @@ namespace ZerodhaOxySocket
         public string InstrumentName { get; set; }
         public long? UnderlyingToken { get; set; }
         public double UnderlyingPrice { get; set; }
-        public string Side { get; set; } // BUY/SELL
+        public string TradeSide { get; set; } // BUY/SELL
         public int QuantityLots { get; set; }
         public DateTime EntryTime { get; set; }
         public double EntryPrice { get; set; }
@@ -49,7 +49,7 @@ namespace ZerodhaOxySocket
                     InstrumentName = order.InstrumentName,
                     UnderlyingToken = order.UnderlyingToken,
                     UnderlyingPrice = order.UnderlyingPrice,
-                    Side = order.Side,
+                    TradeSide = order.Side,
                     QuantityLots = order.QuantityLots,
                     EntryTime = order.PlacedAt,
                     EntryPrice = 0,
@@ -67,7 +67,7 @@ namespace ZerodhaOxySocket
                 InstrumentName = order.InstrumentName,
                 UnderlyingToken = order.UnderlyingToken,
                 UnderlyingPrice = order.UnderlyingPrice,
-                Side = order.Side,
+                TradeSide = order.Side,
                 QuantityLots = order.QuantityLots,
                 EntryTime = tick.TickTime,
                 EntryPrice = fill,
@@ -86,7 +86,7 @@ namespace ZerodhaOxySocket
             last.ExitTime = tick.TickTime;
             last.ExitPrice = tick.LastPrice;
             double pnl = 0;
-            if (string.Equals(last.Side, "BUY", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(last.TradeSide, "BUY", StringComparison.OrdinalIgnoreCase))
                 pnl = (last.ExitPrice.Value - last.EntryPrice) * last.QuantityLots;
             else
                 pnl = (last.EntryPrice - last.ExitPrice.Value) * last.QuantityLots;
