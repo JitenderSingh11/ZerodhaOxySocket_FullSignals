@@ -57,6 +57,7 @@ namespace ZerodhaOxySocket
             int tf = Config.Current.Trading.TimeframeMinutes;
             int seedBars = Config.Current.Trading.SeedBars;
             var seed = DataAccess.LoadRecentCandlesAggregated(cfgTok, seedBars, tf, DateTime.Now);
+            UnderlyingCandleCache.AddCandleCacheSeeds(cfgTok, seed);
             var name = "NIFTY";
             var ctx = new InstrumentContext(_underlyingToken, name, TimeSpan.FromMinutes(tf), seed);
             _contexts[_underlyingToken] = ctx;
@@ -74,6 +75,7 @@ namespace ZerodhaOxySocket
             int tf = Config.Current.Trading.TimeframeMinutes;
             int seedBars = Config.Current.Trading.SeedBars;
             var seed = DataAccess.LoadRecentCandlesAggregated(cfgTok, seedBars, tf, replayConfig.Start);
+            UnderlyingCandleCache.AddCandleCacheSeeds(cfgTok, seed);
             var name = ResolveName(_underlyingToken);
             var ctx = new InstrumentContext(_underlyingToken, name, TimeSpan.FromMinutes(tf), seed);
             _contexts[_underlyingToken] = ctx;
@@ -131,6 +133,13 @@ namespace ZerodhaOxySocket
                     return;
             }
 
+            // diagnostics
+            try
+            {
+                SignalDiagnostics.Info(t.InstrumentToken, t.InstrumentName, t.TickTime, "ENQ", $"Enqueue tick LP={t.LastPrice} Vol={t.Volume} IsLive={IsLive}");
+            }
+            catch { /* swallow logging errors */ }
+
             if (IsLive)
             {
                 // enqueue + event
@@ -158,7 +167,7 @@ namespace ZerodhaOxySocket
         {
             // candle closed path
             if (closed != null)
-            {
+               {
                 if (tokenU == _underlyingToken)
                 {
                     OnCandleClosed?.Invoke(null, new CandleEventArgs
@@ -169,7 +178,11 @@ namespace ZerodhaOxySocket
                     });
 
                     if (IsLive)
+                    {
+                        SignalDiagnostics.Info(tokenU, ctx.Name, closed.Time, "CANDLE", $"Closed candle at {closed.Time:O} O={closed.Open} H={closed.High} L={closed.Low} C={closed.Close} V={closed.Volume}");
                         DataAccess.InsertCandle(closed, tokenU, ctx.Name, true);
+                    }
+                        
 
                     // cache for ATR/exit
                     UnderlyingCandleCache.Put((long)tokenU, closed);
@@ -205,7 +218,7 @@ namespace ZerodhaOxySocket
                                 Status = OrderStatus.Placed
                             };
                             OrderManager.CreateOrder(order);
-
+                            
                             var simOrder = new SimOrder
                             {
                                 ReplayId = replayId,
@@ -233,13 +246,23 @@ namespace ZerodhaOxySocket
     DateTime tickIst, bool allowAfterHours = false)
         {
             if (!allowAfterHours && !SessionClock.IsRegularSessionAt(tickIst))
+            {
+                SignalDiagnostics.Reject(token, ResolveName(token), tickIst, $"SessionClock denied recording (afterHours). tickIst={tickIst:O}");
                 return false;
+            }
 
             var last = _lastSeen.GetOrAdd(token, _ => (double.NaN, -1));
             bool unchanged = last.price == price && last.vol == vol;
 
-            if (unchanged && lastQty <= 0) return false; // stale/no-trade tick
+            if (unchanged && lastQty <= 0)
+            {
+                SignalDiagnostics.Reject(token, ResolveName(token), tickIst, $"Stale/no-trade tick: unchanged price/vol and lastQty={lastQty}");
+                return false;
+            }
+
             _lastSeen[token] = (price, vol);
+
+            SignalDiagnostics.Info(token, ResolveName(token), tickIst, "SHOULDREC", $"Allowed (price={price}, vol={vol}, lastQty={lastQty})");
             return true;
         }
 
@@ -321,8 +344,23 @@ namespace ZerodhaOxySocket
             var batch = new List<TickData>();
             while (_tickQueue.TryDequeue(out var t))
                 batch.Add(t);
+
+            SignalDiagnostics.Info(0, "TickHub", SessionClock.NowIst(), "FLUSH", $"Dequeued total {batch.Count} ticks");
+
+            if (batch.Count == 0) return;
+
             if (batch.Count > 0)
-                DataAccess.InsertTicksBatch(batch);
+            {
+                try
+                {
+                    DataAccess.InsertTicksBatch(batch);
+                    SignalDiagnostics.Info(0, "TickHub", SessionClock.NowIst(), "DB", $"Inserted {batch.Count} ticks");
+                }
+                catch (Exception ex)
+                {
+                    SignalDiagnostics.Reject(0, "TickHub", SessionClock.NowIst(), $"InsertTicksBatch exception: {ex.Message}\n{ex.StackTrace}");
+                }
+            }
         }
 
         public static void Dispose()
@@ -350,7 +388,8 @@ namespace ZerodhaOxySocket
             CandleEvaluation(ctx, closed, instrumentToken, IsLive: false, replayId);
 
             var ticks = new List<TickData>();
-     
+            var candles = new List<Candle>();
+
             if (OrderManager.HasOpenPositionForUnderlying(instrumentToken))
             {
                 foreach (var o in OrderManager.GetOpenOrdersForUnderlying(instrumentToken))
@@ -360,6 +399,11 @@ namespace ZerodhaOxySocket
                                          closed.Time,
                                          closed.Time.AddMinutes(Config.Current.Trading.TimeframeMinutes));
                     ticks.AddRange(ticksData);
+
+                    if(!ticks.Any())
+                    {
+                        candles = DataAccess.LoadAggregatedCandles(o.InstrumentToken, closed.Time, closed.Time.AddMinutes(Config.Current.Trading.TimeframeMinutes), 1);
+                    }
                 }
             }
 
@@ -367,6 +411,15 @@ namespace ZerodhaOxySocket
             { 
                 if (instrumentToken != (tick.InstrumentToken))
                     ExitManager.OnOptionTick(tick.InstrumentToken, tick.LastPrice, tick.TickTime);
+            }
+
+            foreach(var candle in candles)
+            {
+                if (instrumentToken != (candle.InstrumentToken)) 
+                {
+                    ExitManager.OnOptionTick(candle.InstrumentToken, candle.Open, candle.Time);
+                    ExitManager.OnOptionTick(candle.InstrumentToken, candle.Close, candle.Time);
+                }
             }
         }
 

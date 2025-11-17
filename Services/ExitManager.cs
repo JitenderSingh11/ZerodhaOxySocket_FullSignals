@@ -51,7 +51,7 @@ namespace ZerodhaOxySocket
                     string reason = eodCut ? "EOD" :
                         ((o.Side == "BUY" && lastPrice <= stop) || (o.Side == "SELL" && lastPrice >= stop)) ? "ATR Stop" : "ATR Trail";
 
-                    OrderSimulator.CloseSimTrade(o.ReplayId, o.InstrumentToken, tickTime, reason);
+                    OrderSimulator.CloseSimTrade(o.ReplayId, o.InstrumentToken, lastPrice, tickTime, reason);
                     OrderManager.MarkClosed(o.OrderId, lastPrice, tickTime, reason);
                     _open.Remove(o.OrderId);
                 }

@@ -40,7 +40,14 @@ namespace ZerodhaOxySocket
         public static SimTrade PlaceOrderNextTick(Guid replayId, SimOrder order)
         {
             var tick = DataAccess.GetFirstTickAfter(order.InstrumentToken, order.PlacedAt);
-            if (tick == null || tick.TickTime - order.PlacedAt > MaxFillWait)
+            Candle candle = null;
+
+            if (replayId != Guid.Empty && tick == null)
+            {
+                candle = DataAccess.LoadInRangeCandlesAggregated(order.InstrumentToken, Config.Current.Trading.TimeframeMinutes, order.PlacedAt);
+            }
+
+            if ((tick == null && candle == null) || (tick?.TickTime - order.PlacedAt > MaxFillWait || candle?.Time - order.PlacedAt > MaxFillWait))
             {
                 var unfilled = new SimTrade
                 {
@@ -59,7 +66,17 @@ namespace ZerodhaOxySocket
                 return unfilled;
             }
 
-            double fill = tick.LastPrice;
+            double fill = tick?.LastPrice ?? default;
+
+            
+            if (fill == default && candle != null)
+            {
+                var orderCloserToCandleOpen = Math.Abs((candle.Time - order.PlacedAt).TotalSeconds);
+                var orderCloserToCandleClose = Math.Abs((candle.Time.AddMinutes(Config.Current.Trading.TimeframeMinutes) - order.PlacedAt).TotalSeconds);
+
+                fill = orderCloserToCandleOpen < orderCloserToCandleClose ? candle.Open : candle.Close;
+            }
+
             var sim = new SimTrade
             {
                 ReplayId = replayId,
@@ -77,14 +94,12 @@ namespace ZerodhaOxySocket
             return sim;
         }
 
-        public static void CloseSimTrade(Guid replayId, long instrumentToken, DateTime afterTime, string reason = null)
+        public static void CloseSimTrade(Guid replayId, long instrumentToken, double lastPrice, DateTime tickTime, string reason = null)
         {
-            var tick = DataAccess.GetFirstTickAfter(instrumentToken, afterTime);
-            if (tick == null) return;
             var last = DataAccess.GetLastOpenSimTrade(replayId, instrumentToken);
             if (last == null) return;
-            last.ExitTime = tick.TickTime;
-            last.ExitPrice = tick.LastPrice;
+            last.ExitTime = tickTime;
+            last.ExitPrice = lastPrice;
             double pnl = 0;
             if (string.Equals(last.TradeSide, "BUY", StringComparison.OrdinalIgnoreCase))
                 pnl = (last.ExitPrice.Value - last.EntryPrice) * last.QuantityLots;

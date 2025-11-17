@@ -2,7 +2,7 @@
   "ApiKey": "x2pba5w39mfmgd22",
   "ApiSecret": "admyh3xb4o4zafmgvpewi38vd3n676rp",
   "AccessToken": "",
-  "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;",
+  "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;Connection Timeout=300",
 
   "DefaultTimeframeMinutes": 1,
   "PaperTrade": true,
@@ -57,6 +57,6 @@
     "EodExit": "15:20:00",
     "MinBodyPct": 0.08,
     "MinRangeAtr": 0.4,
-    "SeedBars": 200
+    "SeedBars": 300
   }
 }

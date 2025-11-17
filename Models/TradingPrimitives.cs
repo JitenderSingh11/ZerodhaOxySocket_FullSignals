@@ -7,6 +7,11 @@ namespace ZerodhaOxySocket
 
     public class Candle
     {
+        public long InstrumentToken { get; set; }
+
+        public string InstrumentName    { get; set; }
+
+        public string Interval          { get; set; }
         public DateTime Time { get; set; }
         public double Open { get; set; }
         public double High { get; set; }

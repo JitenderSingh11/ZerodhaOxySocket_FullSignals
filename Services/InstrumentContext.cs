@@ -69,6 +69,9 @@ namespace ZerodhaOxySocket
         public SignalResult EvaluateSignalsPositionAware_Conservative()
         {
             var last = _candles.Count;
+
+            SignalDiagnostics.Info(0, "InstrumentContext", SessionClock.NowIst(), "EvaluateSignalsPositionAware_Conservative", $"Candle Count: {last}");
+
             int need = Math.Max(Config.Current.Trading.SlowEma,
                         Math.Max(Config.Current.Trading.RsiPeriod, Config.Current.Trading.AtrPeriod)) + 2;
             if (last < need) return null;

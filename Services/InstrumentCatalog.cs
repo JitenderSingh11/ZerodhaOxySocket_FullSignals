@@ -16,10 +16,15 @@ namespace ZerodhaOxySocket
         /// <summary>
         /// Ensure we have today's instruments: download (if missing), parse strictly, and snapshot idempotently.
         /// </summary>
-        public static async Task<List<InstrumentInfo>> EnsureTodayAsync()
+        public static async Task<int> EnsureTodayAsync()
         {
             Directory.CreateDirectory(DataDir);
             Directory.CreateDirectory(SnapDir);
+
+            // Check if today's snapshot already exists
+            var existingCount = DataAccess.LoadSnapshotCountForDate(DateTime.Today);
+            if (existingCount != null && existingCount > 0)
+                return (int)existingCount;
 
             if (!File.Exists(TodayCsvPath))
             {
@@ -35,7 +40,7 @@ namespace ZerodhaOxySocket
             var legacyPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
             File.Copy(TodayCsvPath, legacyPath, overwrite: true);
 
-            return list;
+            return list.Count;
         }
     }
 }

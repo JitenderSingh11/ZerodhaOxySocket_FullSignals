@@ -73,21 +73,28 @@ namespace ZerodhaOxySocket
             if (t.Exception != null)
                 AppendLog($"Instrument snapshot failed: {t.Exception.GetBaseException().Message}");
             else
-                AppendLog($"Instrument snapshot OK for {DateTime.Today:yyyy-MM-dd} ({t.Result.Count} rows).");
+                AppendLog($"Instrument snapshot OK for {DateTime.Today:yyyy-MM-dd} ({t.Result} rows).");
         });
     });
 
             CandleHistoryService.Initialize(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString, _config.SubscribedInstruments)
                 .ContinueWith(t =>
-            {
-                Dispatcher.Invoke(() =>
                 {
-                    if (t.Exception != null)
-                        AppendLog($"Candles History snapshot failed: {t.Exception.GetBaseException().Message}");
-                    else
-                        AppendLog($"Candles History snapshot OK for {DateTime.Today:yyyy-MM-dd}.");
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (t.Exception != null)
+                            AppendLog($"Candles History snapshot failed: {t.Exception.GetBaseException().Message}");
+                        else
+                            AppendLog($"Candles History snapshot OK for {DateTime.Today:yyyy-MM-dd}.");
+                    });
                 });
-            });
+
+            // Example: enable file logging to a folder in user's AppData
+            var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZerodhaOxySocket", "logs");
+            SignalDiagnostics.StartFileLogging(logDir);
+
+            // optionally show console too while debugging
+            SignalDiagnostics.AlsoConsoleWrite = true;
 
 
             TickHub.OnStatus += s => Dispatcher.Invoke(() => txtStatus.Text = s);
@@ -154,6 +161,18 @@ namespace ZerodhaOxySocket
 
             TickHub.Init(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString);
             TickHub.Connect();
+
+            _ = InstrumentCatalog.EnsureTodayAsync()
+    .ContinueWith(t =>
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (t.Exception != null)
+                AppendLog($"Instrument snapshot failed: {t.Exception.GetBaseException().Message}");
+            else
+                AppendLog($"Instrument snapshot OK for {DateTime.Today:yyyy-MM-dd} ({t.Result} rows).");
+        });
+    });
 
             CandleHistoryService.Initialize(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString, _config.SubscribedInstruments)
                 .ContinueWith(t =>
@@ -405,8 +424,8 @@ namespace ZerodhaOxySocket
         {
             try
             {
-                var list = await InstrumentCatalog.EnsureTodayAsync();
-                AppendLog($"Instruments refreshed & snapshotted ({list.Count} rows).");
+                var listCount = await InstrumentCatalog.EnsureTodayAsync();
+                AppendLog($"Instruments refreshed & snapshotted ({listCount} rows).");
                 // (optional) if you cache instruments in-memory, refresh that cache here
             }
             catch (Exception ex)

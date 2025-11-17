@@ -1,21 +1,21 @@
-    using System.Collections.Generic;
-    using System.Data.SqlClient;
-    using System.Linq;
-    using Dapper;
-    using System;
+using System.Collections.Generic;
+using System.Data.SqlClient;
+using System.Linq;
+using Dapper;
+using System;
 
-    namespace ZerodhaOxySocket
+namespace ZerodhaOxySocket
+{
+    public static class DataAccess
     {
-        public static class DataAccess
-        {
-            private static string _cs = Config.ConnectionString;
+        private static string _cs = Config.ConnectionString;
 
         public static void InitDb(string cs)
-            {
-                _cs = cs;
-                using var conn = new SqlConnection(_cs);
-                conn.Open();
-                conn.Execute(@"
+        {
+            _cs = cs;
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            conn.Execute(@"
 IF OBJECT_ID('dbo.Ticks','U') IS NULL BEGIN
 CREATE TABLE dbo.Ticks(
     Id BIGINT IDENTITY PRIMARY KEY,
@@ -72,13 +72,16 @@ END");
 
             public static void InsertTicksBatch(IEnumerable<TickData> batch)
             {
+            try
+            {
                 using var conn = new SqlConnection(_cs);
                 conn.Open();
                 using var tran = conn.BeginTransaction();
                 var sql = @"
 INSERT INTO dbo.Ticks(InstrumentToken,InstrumentName,LastPrice,LastQuantity,Volume,AveragePrice,OpenPrice,HighPrice,LowPrice,ClosePrice,OI,OIChange,BidQty1,BidPrice1,AskPrice1,AskQty1,TickTime)
 VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@AveragePrice,@OpenPrice,@HighPrice,@LowPrice,@ClosePrice,@OI,@OIChange,@BidQty1,@BidPrice1,@AskPrice1,@AskQty1,@TickTime)";
-                var rows = batch.Select(t => new {
+                var rows = batch.Select(t => new
+                {
                     InstrumentToken = (long)t.InstrumentToken,
                     t.InstrumentName,
                     t.LastPrice,
@@ -100,9 +103,17 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
                 conn.Execute(sql, rows, transaction: tran);
                 tran.Commit();
             }
+            catch (Exception ex)
+            {
+                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"InsertTicksBatch failed: {ex.Message}");
+                throw;
+            }
+        }
 
-            public static void InsertCandle(Candle c, uint token, string name, bool isPaper = true)
+        public static void InsertCandle(Candle c, uint token, string name, bool isPaper = true)
            {
+            try 
+            {
                 using var conn = new SqlConnection(_cs);
                 conn.Open();
 
@@ -112,7 +123,13 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
 INSERT INTO dbo.Candles(InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
 VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
                     new { token = (long)token, name, Interval = interval, time = c.Time, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
+
             }
+            catch (Exception ex)
+            {
+                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"Insert Candle failed: {ex.Message}");
+            }
+}
 
             public static void InsertSignal(Signal s, uint token, string name, bool isPaper = true)
             {
@@ -124,18 +141,21 @@ VALUES(@token, @name, @type, @price, @note, @createdAt)",
                     new { token = (long)token, name, type = s.Type.ToString(), price = s.Price, note = s.Note ?? "", createdAt = SessionClock.NowIst() });
             }
 
-            public static System.Collections.Generic.List<Candle> LoadRecentCandlesAggregated(long token, int bars, int tfMinutes, DateTime startDate)
+        public static List<Candle> LoadRecentCandlesAggregated(long token, int bars, int tfMinutes, DateTime startDate)
 
+        {
+            try
             {
                 const string sql = @"
 WITH G AS (
-  SELECT
+  SELECT InstrumentToken, InstrumentName, Interval,
     DATEADD(MINUTE, DATEDIFF(MINUTE, 0, CandleTime)/@tf*@tf, 0) AS BarTime,
     CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume
-  FROM dbo.CandlesHistory
-  WHERE InstrumentToken = @tok AND Interval='1m' AND CandleTime < @startDate
+  FROM dbo.CandlesHistory with (nolock)
+  WHERE InstrumentToken = @tok AND Interval='1m' AND CandleTime >= dateadd(dd,-20, @startDate) and CandleTime < @startDate
 )
 SELECT TOP (@bars)
+InstrumentToken, InstrumentName, Interval,
   BarTime AS [Time],
   (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS [Open],
   MAX(HighPrice) AS [High],
@@ -143,14 +163,57 @@ SELECT TOP (@bars)
   (SELECT TOP 1 ClosePrice FROM G g3 WHERE g3.BarTime = g.BarTime ORDER BY CandleTime DESC) AS [Close],
   SUM(Volume)    AS [Volume]
 FROM G g
-GROUP BY BarTime
+GROUP BY InstrumentToken, InstrumentName, Interval,BarTime
 ORDER BY Time DESC;";
-                using var conn = new SqlConnection(_cs);
-                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes, startDate }).ToList();
+                using var conn = new SqlConnection($"{_cs}");
+                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes, startDate }, commandTimeout: 300).ToList();
                 rows.Reverse();
                 return rows;
             }
+            catch (Exception ex)
+            {
+                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"LoadRecentCandlesAggregated failed: {ex.Message}");
+                return new List<Candle>();
+            }
+        }
 
+
+        public static Candle LoadInRangeCandlesAggregated(long token, int tfMinutes, DateTime startDate)
+
+        {
+            try
+            {
+                const string sql = @"
+WITH G AS (
+  SELECT InstrumentToken, InstrumentName, Interval,
+    DATEADD(MINUTE, DATEDIFF(MINUTE, 0, CandleTime)/@tf*@tf, 0) AS BarTime,
+    CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume
+  FROM dbo.CandlesHistory with (nolock)
+  WHERE InstrumentToken = @tok AND Interval='1m' AND CandleTime >= dateadd(dd,-20, @startDate) and CandleTime <= dateadd(dd,20, @startDate)
+)
+SELECT TOP 1
+InstrumentToken, InstrumentName, Interval,
+  BarTime AS [Time],
+  (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS [Open],
+  MAX(HighPrice) AS [High],
+  MIN(LowPrice)  AS [Low],
+  (SELECT TOP 1 ClosePrice FROM G g3 WHERE g3.BarTime = g.BarTime ORDER BY CandleTime DESC) AS [Close],
+  SUM(Volume)    AS [Volume]
+FROM G g
+WHERE @startDate BETWEEN BARTime AND DATEADD(MINUTE, @tf, BarTime)
+GROUP BY InstrumentToken, InstrumentName, Interval,BarTime
+ORDER BY Time DESC;";
+
+                using var conn = new SqlConnection($"{_cs}");
+                var rows = conn.Query<Candle>(sql, new { tok = token, tf = tfMinutes, startDate }, commandTimeout: 300).ToList();
+                return rows?.FirstOrDefault();
+            }
+            catch (Exception ex)
+            {
+                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"LoadInRangeCandlesAggregated failed: {ex.Message}");
+                return null;
+            }
+        }
 
         public static List<Candle> LoadAggregatedCandles(long token, DateTime from, DateTime to, int tfMinutes)
         {
@@ -159,12 +222,12 @@ WITH G AS (
   SELECT
     InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume,
     DATEADD(MINUTE, DATEDIFF(MINUTE, 0, CandleTime)/@tf*@tf, 0) AS BarTime
-  FROM dbo.CandlesHistory
+  FROM dbo.CandlesHistory  with (nolock)
   WHERE InstrumentToken = @tok
     AND Interval='1m'
-    AND CandleTime BETWEEN @from AND @to
+    AND CandleTime >= @from and CandleTime < @to
 )
-SELECT
+SELECT InstrumentToken, InstrumentName, Interval,
   BarTime AS [Time],
   (SELECT TOP 1 OpenPrice  FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime ASC)  AS [Open],
   MAX(HighPrice) AS [High],
@@ -172,7 +235,7 @@ SELECT
   (SELECT TOP 1 ClosePrice FROM G g2 WHERE g2.BarTime = g.BarTime ORDER BY CandleTime DESC) AS [Close],
   SUM(Volume) AS [Volume]
 FROM G g
-GROUP BY BarTime
+GROUP BY InstrumentToken, InstrumentName, Interval,BarTime
 ORDER BY [Time];
 ";
 
@@ -210,13 +273,25 @@ VALUES(@date, @token, @symbol, @name, @expiry, @strike, @tickSize, @lot, @itype,
             tran.Commit();
         }
 
+        public static int? LoadSnapshotCountForDate(DateTime date)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            const string sql = @"
+SELECT count(1) as InstrumentCount
+FROM dbo.InstrumentSnapshots  with (nolock)
+WHERE SnapshotDate = @d";
+
+            return (int?)conn.ExecuteScalar(sql, new { d = date.Date });
+        }
+
         public static List<InstrumentInfo> LoadSnapshotForDate(DateTime date)
         {
             using var conn = new SqlConnection(_cs);
             conn.Open();
             const string sql = @"
 SELECT InstrumentToken, Tradingsymbol, Name, Expiry, Strike, TickSize, LotSize, InstrumentType, Segment, Exchange, RawLine
-FROM dbo.InstrumentSnapshots
+FROM dbo.InstrumentSnapshots  with (nolock)
 WHERE SnapshotDate = @d";
             var rows = conn.Query(sql, new { d = date.Date }).Select(r => new InstrumentInfo
             {
@@ -241,7 +316,7 @@ WHERE SnapshotDate = @d";
             conn.Open();
             const string sql = @"
 SELECT TOP (1) InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice, OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
-FROM dbo.Ticks
+FROM dbo.Ticks with (nolock)
 WHERE InstrumentToken = @tok AND TickTime > @t
 ORDER BY TickTime ASC";
             var r = conn.QueryFirstOrDefault(sql, new { tok = token, t = afterTime });
@@ -275,7 +350,7 @@ ORDER BY TickTime ASC";
             var sql = @"
 SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
        OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
-FROM dbo.Ticks
+FROM dbo.Ticks with (nolock)
 WHERE TickTime BETWEEN @s AND @e
 ORDER BY TickTime ASC";
             return conn.Query<TickData>(sql, new { s = start, e = end }).ToList();
@@ -289,11 +364,11 @@ ORDER BY TickTime ASC";
             var sql = @"
 SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
        OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
-FROM dbo.Ticks
-WHERE TickTime BETWEEN @s AND @e
-  AND InstrumentToken IN @tokens
+FROM dbo.Ticks  with (nolock)
+WHERE TickTime >= @s AND TickTime < @e
+AND InstrumentToken IN @tokens
 ORDER BY TickTime ASC";
-            return conn.Query<TickData>(sql, new { s = start, e = end, tokens }).ToList();
+            return conn.Query<TickData>(sql, new { s = start, e = end, tokens }, commandTimeout: 100).ToList();
         }
 
         public static IEnumerable<TickData> StreamTicksRange(long[] tokens, DateTime start, DateTime end)
@@ -303,7 +378,7 @@ ORDER BY TickTime ASC";
             var sql = $@"
 SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, AveragePrice,
        OpenPrice, HighPrice, LowPrice, ClosePrice, OI, OIChange, BidQty1, BidPrice1, AskPrice1, AskQty1, TickTime
-FROM dbo.Ticks
+FROM dbo.Ticks  with (nolock)
 WHERE TickTime BETWEEN @s AND @e
 ORDER BY TickTime ASC";
 
@@ -346,7 +421,7 @@ ORDER BY TickTime ASC";
             string pat = $"%{strike}%{ceOrPe}%";
             var sql = @"
 SELECT DISTINCT InstrumentToken, InstrumentName
-FROM dbo.Ticks
+FROM dbo.Ticks  with (nolock)
 WHERE TickTime BETWEEN @s AND @e
   AND InstrumentName LIKE @pat
 ORDER BY InstrumentName";
@@ -384,8 +459,9 @@ VALUES(@replay, @token, @name, @utok, @uprice, @side, @lots, @et, @ep, @xt, @xp,
             using var conn = new SqlConnection(_cs);
             conn.Open();
             var sql = @"
-SELECT TOP 1 * FROM dbo.SimTrades
+SELECT TOP 1 * FROM dbo.SimTrades  with (nolock)
 WHERE ReplayId = @rid AND InstrumentToken = @tok AND ExitTime IS NULL
+AND Reason <> 'Unfilled'
 ORDER BY EntryTime DESC";
             return conn.QueryFirstOrDefault<SimTrade>(sql, new { rid = replayId, tok = instrumentToken });
         }

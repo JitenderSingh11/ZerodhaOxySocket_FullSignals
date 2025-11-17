@@ -9,6 +9,15 @@ namespace ZerodhaOxySocket
     {
         private static readonly Dictionary<long, List<Candle>> _byToken = new();
 
+        public static void AddCandleCacheSeeds(long underlyingToken,IEnumerable<Candle> candlesList)
+        {
+            _byToken.Clear();
+
+            foreach (var c in candlesList)
+            {
+                Put(underlyingToken, c);
+            }
+        }
         public static void Put(long underlyingToken, Candle c)
         {
             if (!_byToken.TryGetValue(underlyingToken, out var list))

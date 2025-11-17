@@ -44,6 +44,7 @@ namespace ZerodhaOxySocket
 
         private async void BtnFetch_Click(object sender, RoutedEventArgs e)
         {
+
             // parse inputs
             if (!DateTime.TryParse($"{DpStartDate.SelectedDate:yyyy-MM-dd} {TxtStartTime.Text}", out var from))
             {
