@@ -1,14 +1,16 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Windows;
-using System.Windows.Controls;
+using KiteConnect;
 using Newtonsoft.Json;
 using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.Series;
-using KiteConnect;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using ZerodhaOxySocket.Helpers;
 using ZerodhaOxySocket.Services;
 
 namespace ZerodhaOxySocket
@@ -116,6 +118,24 @@ namespace ZerodhaOxySocket
             {
                 AppendLog($"SIGNAL {e.InstrumentName}: {e.Signal.Type} @ {e.Signal.Price:F2}");
             });
+
+
+            Task.Run(async () =>
+            {
+                while (true)
+                {
+                    var now = DateTime.Now;
+                    var eod = now.Date.AddHours(16).AddMinutes(0);
+                    if (now >= eod && now < eod.AddMinutes(10)) // Run once during EOD window
+                    {
+                        await CandleHistoryService.FetchAllDailyTokensCandleHistoryAsync(DateTime.Today);
+                        break; // or sleep 1 hour before checking again
+                    }
+
+                    await Task.Delay(TimeSpan.FromMinutes(5));
+                }
+            });
+
         }
 
         private void AppendLog(string line)
@@ -160,6 +180,7 @@ namespace ZerodhaOxySocket
             }
 
             TickHub.Init(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString);
+            TickPipeline.Start();
             TickHub.Connect();
 
             _ = InstrumentCatalog.EnsureTodayAsync()
@@ -186,26 +207,12 @@ namespace ZerodhaOxySocket
                     });
                 });
 
-            var csv = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
-            foreach (var auto in _config.AutoSubscribe)
-            {
-                string spotSymbol = auto.Symbol == "NIFTY" ? "NIFTY 50" : auto.Symbol;
-                double spot = MarketDataHelper.GetSpotPrice(_config.ApiKey, _config.AccessToken, spotSymbol, "NSE");
-                if (spot <= 0) continue;
-                int step = auto.Symbol.Contains("BANK") ? 100 : 50;
-                int atm = (int)(Math.Round(spot / step) * step);
-                var tokens = new List<uint>();
-                for (int i = -auto.Range; i <= auto.Range; i++)
-                {
-                    int strike = atm + i * step;
-                    var ce = InstrumentHelper.GetOptionToken(auto.Symbol, strike, "CE", csv);
-                    var pe = InstrumentHelper.GetOptionToken(auto.Symbol, strike, "PE", csv);
-                    if (ce != 0) tokens.Add(ce);
-                    if (pe != 0) tokens.Add(pe);
-                }
+                
+                var tokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config).ToList();
+
                 if (tokens.Count > 0)
                     TickHub.SubscribeAuto(tokens);
-            }
+            
 
             txtStatus.Text = "Connecting...";
         }

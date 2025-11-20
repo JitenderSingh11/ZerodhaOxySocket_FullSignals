@@ -86,7 +86,7 @@ namespace ZerodhaOxySocket
                 UnderlyingPrice = order.UnderlyingPrice,
                 TradeSide = order.Side,
                 QuantityLots = order.QuantityLots,
-                EntryTime = tick.TickTime,
+                EntryTime = tick?.TickTime ?? order.PlacedAt,
                 EntryPrice = fill,
                 Reason = order.Reason
             };

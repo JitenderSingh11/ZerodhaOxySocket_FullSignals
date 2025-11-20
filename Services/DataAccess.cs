@@ -78,8 +78,8 @@ END");
                 conn.Open();
                 using var tran = conn.BeginTransaction();
                 var sql = @"
-INSERT INTO dbo.Ticks(InstrumentToken,InstrumentName,LastPrice,LastQuantity,Volume,AveragePrice,OpenPrice,HighPrice,LowPrice,ClosePrice,OI,OIChange,BidQty1,BidPrice1,AskPrice1,AskQty1,TickTime)
-VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@AveragePrice,@OpenPrice,@HighPrice,@LowPrice,@ClosePrice,@OI,@OIChange,@BidQty1,@BidPrice1,@AskPrice1,@AskQty1,@TickTime)";
+INSERT INTO dbo.Ticks(InstrumentToken,InstrumentName,LastPrice,LastQuantity,Volume,AveragePrice,OpenPrice,HighPrice,LowPrice,ClosePrice,OI,OIChange,BidQty1,BidPrice1,AskPrice1,AskQty1,TickTime,ReceivedAt)
+VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@AveragePrice,@OpenPrice,@HighPrice,@LowPrice,@ClosePrice,@OI,@OIChange,@BidQty1,@BidPrice1,@AskPrice1,@AskQty1,@TickTime,@ReceivedAt)";
                 var rows = batch.Select(t => new
                 {
                     InstrumentToken = (long)t.InstrumentToken,
@@ -98,7 +98,8 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
                     t.BidPrice1,
                     t.AskPrice1,
                     t.AskQty1,
-                    t.TickTime
+                    t.TickTime,
+                    t.ReceivedAt
                 });
                 conn.Execute(sql, rows, transaction: tran);
                 tran.Commit();

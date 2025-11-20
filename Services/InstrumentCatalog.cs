@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -41,6 +42,18 @@ namespace ZerodhaOxySocket
             File.Copy(TodayCsvPath, legacyPath, overwrite: true);
 
             return list.Count;
+        }
+
+        public static string ResolveName(uint token)
+        {
+            try
+            {
+                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
+                var it = list.FirstOrDefault(x => x.InstrumentToken == token);
+                if (it != null) return string.IsNullOrWhiteSpace(it.Tradingsymbol) ? (it.Name ?? token.ToString()) : it.Tradingsymbol;
+            }
+            catch { }
+            return token.ToString();
         }
     }
 }

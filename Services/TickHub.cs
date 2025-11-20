@@ -30,7 +30,6 @@ namespace ZerodhaOxySocket
     public static class TickHub
     {
         private static ZerodhaTickerSocket _socket;
-        private static readonly ConcurrentQueue<TickData> _tickQueue = new();
         private static readonly CancellationTokenSource _cts = new();
         private static string _apiKey = "", _accessToken = "", _cs = "";
         private static readonly HashSet<uint> _manualTokens = new();
@@ -44,6 +43,8 @@ namespace ZerodhaOxySocket
 
         private static readonly ConcurrentDictionary<uint,(double price,long vol)> _lastSeen = new();
         private static uint _underlyingToken = 256265; // NIFTY
+
+        private static long _socketDropCounter = 0;
 
         public static void Init(string apiKey, string accessToken, string connectionString)
         {
@@ -61,8 +62,6 @@ namespace ZerodhaOxySocket
             var name = "NIFTY";
             var ctx = new InstrumentContext(_underlyingToken, name, TimeSpan.FromMinutes(tf), seed);
             _contexts[_underlyingToken] = ctx;
-
-            StartWriter();
         }
 
         public static void ReplayInit(ReplayConfig replayConfig)
@@ -87,36 +86,88 @@ namespace ZerodhaOxySocket
             _socket?.Dispose();
             _socket = new ZerodhaTickerSocket();
             _socket.OnStatus += s => OnStatus?.Invoke(s);
-            _socket.OnTicks += ticks =>
+            // Fast path socket handler: tiny, allocation-light, non-blocking
+            _socket.OnTicks += payload =>
             {
-                foreach (var kt in ticks)
+                try
                 {
-                    var tdata = new TickData
+                    // If SDK returns an IList<T> or array, prefer indexed for-loop (slightly faster than foreach)
+                    if (payload is IList<Tick> list)
                     {
-                        InstrumentToken = (uint)kt.InstrumentToken,
-                        InstrumentName = ResolveName((uint)kt.InstrumentToken),
-                        LastPrice = (double)kt.LastPrice,
-                        LastQuantity = kt.LastQuantity,
-                        Volume = kt.Volume,
-                        AveragePrice = (double)kt.AveragePrice,
-                        OpenPrice = (double)kt.Open,
-                        HighPrice = (double)kt.High,
-                        LowPrice = (double)kt.Low,
-                        ClosePrice = (double)kt.Close,
-                        OI = kt.OI,
-                        OIChange = 0,
-                        BidPrice1 = 0,
-                        BidQty1 = 0,
-                        AskPrice1 = 0,
-                        AskQty1 = 0,
-                        TickTime = SessionClock.NowIst()   // LIVE: system IST time
-                    };
-
-                    HandleTickCore(tdata, Guid.Empty, IsLive: true);
-
-
+                        for (int i = 0, n = list.Count; i < n; ++i)
+                        {
+                            var kt = list[i];
+                            EnqueueFromKt(kt);
+                        }
+                    }
+                    else if (payload is IEnumerable<Tick> batch)
+                    {
+                        // fallback for IEnumerable (still fast)
+                        foreach (var kt in batch)
+                            EnqueueFromKt(kt);
+                    }
+                    else
+                    {
+                        // single tick payload
+                        dynamic single = payload;
+                        EnqueueFromKt(single);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SignalDiagnostics.Reject(0, "TickHub", DateTime.Now, $"Socket parse/enqueue exception: {ex.Message}");
                 }
             };
+
+            // helper (inline for minimal allocations)
+            void EnqueueFromKt(dynamic kt)
+            {
+                // Extract minimal fields only (no heavy method calls)
+                uint token = (uint)kt.InstrumentToken;
+                double price = (double)kt.LastPrice;
+                long qty = (long)(kt.LastQuantity ?? 0);
+                long vol = (long)(kt.Volume ?? 0);
+                double averagePrice = (double)kt.AveragePrice;
+                double openPrice = (double)kt.Open;
+                double highPrice = (double)kt.High;
+                double lowPrice = (double)kt.Low;
+                double closePrice = (double)kt.Close;
+                long OI = (long)kt.OI;
+
+                DateTime tickTime = SessionClock.NowIst();
+                try
+                {
+                    if (kt.LastTradeTime is DateTime dt)
+                        tickTime = dt;
+                }
+                catch { /* fallback remains */ }
+
+                var t = new TickData
+                {
+                    InstrumentToken = token,
+                    LastPrice = price,
+                    LastQuantity = qty,
+                    Volume = vol,
+                    TickTime = tickTime,
+                    ReceivedAt = SessionClock.NowIst(),
+                    AveragePrice = averagePrice,
+                    OpenPrice = openPrice,
+                    HighPrice = highPrice,
+                    LowPrice = lowPrice,
+                    ClosePrice = closePrice,
+                    OI = OI,
+                    IsReplay = false
+                };
+
+                // Fast non-blocking enqueue (very cheap)
+                if (!TickPipeline.EnqueueTick(t))
+                {
+                    SignalDiagnostics.Warn(t.InstrumentToken, t.InstrumentName, DateTime.Now, "Enqueue failed - channel full");
+                    // channel full / drop: only increment metric; avoid heavy logging here
+                    Interlocked.Increment(ref _socketDropCounter);
+                }
+            }
+
 
             _socket.Connect(_apiKey, _accessToken);
         }
@@ -140,11 +191,7 @@ namespace ZerodhaOxySocket
             }
             catch { /* swallow logging errors */ }
 
-            if (IsLive)
-            {
-                // enqueue + event
-                _tickQueue.Enqueue(t);
-            }
+
 
             OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
 
@@ -199,7 +246,8 @@ namespace ZerodhaOxySocket
                             return;
 
                         var optType = (sig.Type == SignalType.Buy) ? "CE" : "PE";
-                        var mapped = OptionMapper.ChooseATMOption(sig.Time, sig.Price, optType);
+                        var expiry = OptionMapper.GetNearestExpiry("NIFTY");
+                        var mapped = OptionMapper.ChooseATMOption("NIFTY", sig.Price, expiry.Value, optType);
                         if (mapped != null)
                         {
                             // simulate order (works for live too until you wire real orders)
@@ -239,6 +287,49 @@ namespace ZerodhaOxySocket
                 }
             }
         }
+
+        /// <summary>
+        /// Called by the TickPipeline consumer for each tick (live path).
+        /// This runs the in-memory candle update, signal evaluation and exit checks.
+        /// It intentionally DOES NOT enqueue tick into old _tickQueue (the pipeline persists ticks).
+        /// </summary>
+        public static void ProcessTickFromPipeline(TickData t)
+        {
+            if (t == null) return;
+
+            var tokenU = t.InstrumentToken;
+
+            // gate recording (use provider tick time). Pipeline ensures we call this only for live ticks.
+            if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity, t.TickTime))
+                return;
+
+            // diagnostics
+            try
+            {
+                SignalDiagnostics.Info(t.InstrumentToken, ResolveName(tokenU), t.TickTime, "ENQ",
+                    $"Pipeline tick LP={t.LastPrice} Vol={t.Volume}");
+            }
+            catch { /* swallow logging errors */ }
+
+            // publish LTP to any subscribers
+            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+
+            // get-or-create instrument context
+            var name = ResolveName(tokenU);
+            var ctx = _contexts.GetOrAdd(tokenU, _ =>
+                new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
+
+            // IMPORTANT: use the tick's time when updating candles
+            var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime);  // ensure this overload exists
+
+            // Evaluate closed candle (this will persist candles when IsLive = true inside CandleEvaluation)
+            CandleEvaluation(ctx, closed, tokenU, IsLive: true, replayId: Guid.Empty);
+
+            // feed exits for option ticks (non-underlying tokens)
+            if ((long)tokenU != (_underlyingToken))
+                ExitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
+        }
+
 
 
         private static bool ShouldRecord(
@@ -324,50 +415,6 @@ namespace ZerodhaOxySocket
             _manualTokens.Remove(token);
             _socket?.Unsubscribe(new[] { token });
             OnStatus?.Invoke($"Manual unsubscribed {token}");
-        }
-
-
-        private static void StartWriter()
-        {
-            Task.Run(async () =>
-            {
-                while (!_cts.Token.IsCancellationRequested)
-                {
-                    await Task.Delay(1000, _cts.Token);
-                    Flush();
-                }
-            }, _cts.Token);
-        }
-
-        private static void Flush()
-        {
-            var batch = new List<TickData>();
-            while (_tickQueue.TryDequeue(out var t))
-                batch.Add(t);
-
-            SignalDiagnostics.Info(0, "TickHub", SessionClock.NowIst(), "FLUSH", $"Dequeued total {batch.Count} ticks");
-
-            if (batch.Count == 0) return;
-
-            if (batch.Count > 0)
-            {
-                try
-                {
-                    DataAccess.InsertTicksBatch(batch);
-                    SignalDiagnostics.Info(0, "TickHub", SessionClock.NowIst(), "DB", $"Inserted {batch.Count} ticks");
-                }
-                catch (Exception ex)
-                {
-                    SignalDiagnostics.Reject(0, "TickHub", SessionClock.NowIst(), $"InsertTicksBatch exception: {ex.Message}\n{ex.StackTrace}");
-                }
-            }
-        }
-
-        public static void Dispose()
-        {
-            _cts.Cancel();
-            Flush();
-            _socket?.Dispose();
         }
 
         public static void ProcessReplayTick(TickData t, Guid replayId, bool isActive)

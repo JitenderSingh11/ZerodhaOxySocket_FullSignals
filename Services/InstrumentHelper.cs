@@ -271,5 +271,31 @@ namespace ZerodhaOxySocket
 
             return list;
         }
+
+        public static List<DateTime> GetExpiriesFor(string symbol, string csvPath, DateTime asOf)
+        {
+            var list = LoadInstrumentsFromCsv(csvPath);
+            return list
+            .Where(i => i.Name.StartsWith(symbol)
+            && i.Segment == "NFO-OPT"
+            && i.Expiry.HasValue
+            && i.Expiry.Value.Date >= asOf.Date)
+            .Select(i => i.Expiry.Value.Date)
+            .Distinct()
+            .OrderBy(d => d)
+            .ToList();
+        }
+
+
+        public static InstrumentInfo GetOptionInstrument(string symbol, DateTime expiry, int strike, string type, string csvPath)
+        {
+            var list = LoadInstrumentsFromCsv(csvPath);
+            return list?.FirstOrDefault(i =>
+            i.Name.StartsWith(symbol)
+            && i.Segment == "NFO-OPT"
+            && i.Expiry?.Date == expiry.Date
+            && i.Strike == strike
+            && string.Equals(i.InstrumentType, type, StringComparison.OrdinalIgnoreCase));
+        }
     }
 }

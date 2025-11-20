@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -61,11 +62,21 @@ namespace ZerodhaOxySocket
                 MessageBox.Show("End must be after start", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            if (!uint.TryParse(TxtInstrumentToken.Text, out var token))
+
+            var tokenInput = TxtInstrumentToken.Text;
+            var tokens = tokenInput.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                   .Select(s => s.Trim())
+                                   .Where(s => uint.TryParse(s, out _))
+                                   .Select(uint.Parse)
+                                   .Distinct()
+                                   .ToList();
+
+            if (tokens.Count == 0)
             {
-                MessageBox.Show("Invalid instrument token", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Enter at least one valid instrument token (comma separated)", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+
 
             var tfMinutes = (CmbTf.SelectedItem as System.Windows.Controls.ComboBoxItem).Content.ToString();
 
@@ -85,9 +96,13 @@ namespace ZerodhaOxySocket
 
             try
             {
-                Log($"Starting fetch: token={token} from={from:O} to={to:O} tf={tfMinutes}m");
                 // call the CandleHistoryService method you add below
-                await CandleHistoryService.FetchAndUpsertRangeAsync(token, from, to, tfMinutes, progress, _cts.Token);
+                foreach (var token in tokens)
+                {
+                    Log($"Starting fetch: token={token} from={from:O} to={to:O} tf={tfMinutes}m");
+                    await CandleHistoryService.FetchAndUpsertRangeAsync(token, from, to, tfMinutes, progress, _cts.Token);
+                }
+
                 SetProgress(100);
                 SetStatus("Completed");
                 Log("Fetch completed successfully.");

@@ -21,5 +21,9 @@ namespace ZerodhaOxySocket
         public double AskPrice1 { get; set; }
         public long AskQty1 { get; set; }
         public DateTime TickTime { get; set; }
+
+        public DateTime? ReceivedAt { get; set; }
+
+        public bool IsReplay { get; set; }
     }
 }

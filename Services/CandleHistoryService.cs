@@ -201,6 +201,27 @@ INSERT INTO CandlesHistory (InstrumentToken, InstrumentName, Interval, CandleTim
             return token.ToString();
         }
 
+        public static async Task FetchAllDailyTokensCandleHistoryAsync(DateTime day, string interval = "minute")
+        {
+            var from = day.AddDays(-30).Date;
+            var to = day.Date.AddDays(1); // until midnight
+
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            var sql = @"SELECT DISTINCT InstrumentToken FROM Ticks with (nolock) WHERE CAST(DATECREATED AS DATE) = @day";
+            var tokens = (await connection.QueryAsync<uint>(sql, new { day })).ToList();
+
+            foreach (var token in tokens)
+            {
+                Console.WriteLine($"Fetching 1m candle data for token={token} from {from:yyyy-MM-dd} to {to:yyyy-MM-dd}");
+                await FetchAndUpsertRangeAsync(token, from, to, interval, null, CancellationToken.None);
+            }
+
+            Console.WriteLine("Done fetching historical candle data for all tokens");
+        }
+
+
         /// <summary>
         /// Fetches historical 1-minute candles from Kite and upserts into CandleHistory table
         /// for the specified token between from->to. Batches upserts and reports progress.
