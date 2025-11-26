@@ -14,6 +14,8 @@ namespace ZerodhaOxySocket
         private static string SnapDir => Path.Combine(BaseDir, "snapshots");
         private static string TodayCsvPath => Path.Combine(DataDir, $"instruments_{DateTime.Today:yyyyMMdd}.csv");
 
+        private static List<InstrumentInfo> instrumentList = null;
+
         /// <summary>
         /// Ensure we have today's instruments: download (if missing), parse strictly, and snapshot idempotently.
         /// </summary>
@@ -41,6 +43,8 @@ namespace ZerodhaOxySocket
             var legacyPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
             File.Copy(TodayCsvPath, legacyPath, overwrite: true);
 
+            instrumentList = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
+
             return list.Count;
         }
 
@@ -48,8 +52,7 @@ namespace ZerodhaOxySocket
         {
             try
             {
-                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
-                var it = list.FirstOrDefault(x => x.InstrumentToken == token);
+                var it = instrumentList.FirstOrDefault(x => x.InstrumentToken == token);
                 if (it != null) return string.IsNullOrWhiteSpace(it.Tradingsymbol) ? (it.Name ?? token.ToString()) : it.Tradingsymbol;
             }
             catch { }

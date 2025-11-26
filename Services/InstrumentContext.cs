@@ -13,6 +13,7 @@ namespace ZerodhaOxySocket
         private DateTime _currentCandleTime = default;
         private double _open, _high, _low, _close, _volume;
         private readonly TimeSpan _timeframe;
+        private readonly object _sync = new();
 
         public InstrumentContext(uint token, string name, TimeSpan timeframe, IEnumerable<Candle>? seed = null)
         {
@@ -28,42 +29,49 @@ namespace ZerodhaOxySocket
 
         public IReadOnlyList<Candle> GetCandles() => _candles.AsReadOnly();
 
-
-        public Candle ProcessTickWithTime(double ltp, DateTime tickTime)
+        // Accept optional qty (may be zero for indices). Returns the closed candle when a candle closed, otherwise null.
+        public Candle? ProcessTickWithTime(double ltp, DateTime tickTime, long qty = 0)
         {
-            // compute bucketStart based on tickTime (convert to IST with SessionClock)
-            var bucketStart = Clock.FloorToBucketIst(tickTime, _timeframe); // implement a helper to floor to timeframe based on IST or tickTime timezone
-                                                                            // then same logic as ProcessTick but use provided times
+            // compute bucketStart based on tickTime (assume tickTime in IST or provided by SessionClock)
+            var bucketStart = Clock.FloorToBucketIst(tickTime, _timeframe);
 
-            if (_currentCandleTime == default || bucketStart != _currentCandleTime)
+            lock (_sync)
             {
-                Candle closed = null;
-                if (_currentCandleTime != default)
+                if (_currentCandleTime == default || bucketStart != _currentCandleTime)
                 {
-                    closed = new Candle { Time = _currentCandleTime, Open = _open, High = _high, Low = _low, Close = _close, Volume = _volume };
-                    _candles.Add(closed);
-                    if (_candles.Count > 1000) _candles.RemoveAt(0);
+                    Candle? closed = null;
+                    if (_currentCandleTime != default)
+                    {
+                        closed = new Candle { Time = _currentCandleTime, Open = _open, High = _high, Low = _low, Close = _close, Volume = _volume };
+                        _candles.Add(closed);
+                        if (_candles.Count > 1000) _candles.RemoveAt(0);
+                    }
+
+                    _currentCandleTime = bucketStart;
+                    _open = _high = _low = _close = ltp;
+                    // initialize volume: use reported qty when available, otherwise count ticks as 1
+                    _volume = (qty > 0) ? qty : 1;
+                    return closed;
                 }
-                _currentCandleTime = bucketStart;
-                _open = _high = _low = _close = ltp;
-                _volume = 0;
-                return closed;
-            }
-            else
-            {
-                _close = ltp;
-                _high = Math.Max(_high, ltp);
-                _low = Math.Min(_low, ltp);
-                _volume += 0;
-                return null;
+                else
+                {
+                    _close = ltp;
+                    _high = Math.Max(_high, ltp);
+                    _low = Math.Min(_low, ltp);
+                    _volume += (qty > 0) ? qty : 1; // fallback to tick-count when qty missing
+                    return null;
+                }
             }
         }
 
         public void AddCandle(Candle c)
         {
-            _candles.Add(c);
-            if (_candles.Count > 1000) _candles.RemoveAt(0);
-            _currentCandleTime = c.Time;
+            lock (_sync)
+            {
+                _candles.Add(c);
+                if (_candles.Count > 1000) _candles.RemoveAt(0);
+                _currentCandleTime = c.Time;
+            }
         }
 
         public SignalResult EvaluateSignalsPositionAware_Conservative()

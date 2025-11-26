@@ -3,12 +3,17 @@ using System.Data.SqlClient;
 using System.Linq;
 using Dapper;
 using System;
+using System.Data;
 
 namespace ZerodhaOxySocket
 {
     public static class DataAccess
     {
         private static string _cs = Config.ConnectionString;
+
+        private static readonly TimeZoneInfo IST =
+            TimeZoneInfo.FindSystemTimeZoneById(
+                System.Environment.OSVersion.Platform == PlatformID.Win32NT ? "India Standard Time" : "Asia/Kolkata");
 
         public static void InitDb(string cs)
         {
@@ -38,7 +43,7 @@ CREATE TABLE dbo.Ticks(
 );
 CREATE INDEX IX_Ticks_TokenTime ON dbo.Ticks(InstrumentToken, TickTime);
 END");
-                conn.Execute(@"
+            conn.Execute(@"
 IF OBJECT_ID('dbo.Candles','U') IS NULL BEGIN
 CREATE TABLE dbo.Candles(
     Id BIGINT IDENTITY PRIMARY KEY,
@@ -55,7 +60,7 @@ CREATE TABLE dbo.Candles(
 );
 CREATE INDEX IX_Candles_TokenIntervalTime ON dbo.Candles(InstrumentToken, Interval, CandleTime);
 END");
-                conn.Execute(@"
+            conn.Execute(@"
 IF OBJECT_ID('dbo.Signals','U') IS NULL BEGIN
 CREATE TABLE dbo.Signals(
     Id BIGINT IDENTITY PRIMARY KEY,
@@ -68,10 +73,10 @@ CREATE TABLE dbo.Signals(
 );
 CREATE INDEX IX_Signals_TokenTime ON dbo.Signals(InstrumentToken, CreatedAt);
 END");
-            }
+        }
 
-            public static void InsertTicksBatch(IEnumerable<TickData> batch)
-            {
+        public static void InsertTicksBatch(IEnumerable<TickData> batch)
+        {
             try
             {
                 using var conn = new SqlConnection(_cs);
@@ -98,52 +103,145 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
                     t.BidPrice1,
                     t.AskPrice1,
                     t.AskQty1,
-                    t.TickTime,
-                    t.ReceivedAt
+                    // Convert internal UTC to IST for DB storage
+                    TickTime = (DateTime)ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime),
+                    ReceivedAt = (DateTime)ZerodhaOxySocket.Services.Clock.UtcToIst(t.ReceivedAt ?? DateTime.UtcNow)
                 });
                 conn.Execute(sql, rows, transaction: tran);
                 tran.Commit();
             }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"InsertTicksBatch failed: {ex.Message}");
+                SignalDiagnostics.Reject(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertTicksBatch failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Bulk insert using SqlBulkCopy. Uses a DataTable and explicit column mappings.
+        /// </summary>
+        public static void InsertTicksBulk(IEnumerable<TickData> batch)
+        {
+            try
+            {
+                var dt = new DataTable();
+                dt.Columns.Add("InstrumentToken", typeof(long));
+                dt.Columns.Add("LastPrice", typeof(decimal));
+                dt.Columns.Add("LastQuantity", typeof(long));
+                dt.Columns.Add("Volume", typeof(long));
+                dt.Columns.Add("AveragePrice", typeof(decimal));
+                dt.Columns.Add("OpenPrice", typeof(decimal));
+                dt.Columns.Add("HighPrice", typeof(decimal));
+                dt.Columns.Add("LowPrice", typeof(decimal));
+                dt.Columns.Add("ClosePrice", typeof(decimal));
+                dt.Columns.Add("OI", typeof(long));
+                dt.Columns.Add("OIChange", typeof(long));
+                dt.Columns.Add("BidQty1", typeof(long));
+                dt.Columns.Add("BidPrice1", typeof(decimal));
+                dt.Columns.Add("AskPrice1", typeof(decimal));
+                dt.Columns.Add("AskQty1", typeof(long));
+                dt.Columns.Add("TickTime", typeof(DateTime));
+                dt.Columns.Add("InstrumentName", typeof(string));
+                dt.Columns.Add("ReceivedAt", typeof(DateTime));
+
+                foreach (var t in batch)
+                {
+                    var row = dt.NewRow();
+                    row["InstrumentToken"] = (long)t.InstrumentToken;
+                    row["LastPrice"] = Convert.ToDecimal(t.LastPrice);
+                    row["LastQuantity"] = t.LastQuantity;
+                    row["Volume"] = t.Volume;
+                    row["AveragePrice"] = Convert.ToDecimal(t.AveragePrice);
+                    row["OpenPrice"] = Convert.ToDecimal(t.OpenPrice);
+                    row["HighPrice"] = Convert.ToDecimal(t.HighPrice);
+                    row["LowPrice"] = Convert.ToDecimal(t.LowPrice);
+                    row["ClosePrice"] = Convert.ToDecimal(t.ClosePrice);
+                    row["OI"] = t.OI;
+                    row["OIChange"] = t.OIChange;
+                    row["BidQty1"] = t.BidQty1;
+                    row["BidPrice1"] = Convert.ToDecimal(t.BidPrice1);
+                    row["AskPrice1"] = Convert.ToDecimal(t.AskPrice1);
+                    row["AskQty1"] = t.AskQty1;
+                    // store IST in DB
+                    row["TickTime"] = ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime);
+                    row["InstrumentName"] = t.InstrumentName ?? string.Empty;
+                    row["ReceivedAt"] = ZerodhaOxySocket.Services.Clock.UtcToIst(t.ReceivedAt ?? DateTime.UtcNow);
+                    dt.Rows.Add(row);
+                }
+
+                using var conn = new SqlConnection(_cs);
+                conn.Open();
+                using var bulk = new SqlBulkCopy(conn)
+                {
+                    DestinationTableName = "dbo.Ticks",
+                    BatchSize = Math.Max(1, dt.Rows.Count),
+                    BulkCopyTimeout = 600
+                };
+
+                // Column mappings
+                bulk.ColumnMappings.Add("InstrumentToken", "InstrumentToken");
+                bulk.ColumnMappings.Add("LastPrice", "LastPrice");
+                bulk.ColumnMappings.Add("LastQuantity", "LastQuantity");
+                bulk.ColumnMappings.Add("Volume", "Volume");
+                bulk.ColumnMappings.Add("AveragePrice", "AveragePrice");
+                bulk.ColumnMappings.Add("OpenPrice", "OpenPrice");
+                bulk.ColumnMappings.Add("HighPrice", "HighPrice");
+                bulk.ColumnMappings.Add("LowPrice", "LowPrice");
+                bulk.ColumnMappings.Add("ClosePrice", "ClosePrice");
+                bulk.ColumnMappings.Add("OI", "OI");
+                bulk.ColumnMappings.Add("OIChange", "OIChange");
+                bulk.ColumnMappings.Add("BidQty1", "BidQty1");
+                bulk.ColumnMappings.Add("BidPrice1", "BidPrice1");
+                bulk.ColumnMappings.Add("AskPrice1", "AskPrice1");
+                bulk.ColumnMappings.Add("AskQty1", "AskQty1");
+                bulk.ColumnMappings.Add("TickTime", "TickTime");
+                bulk.ColumnMappings.Add("InstrumentName", "InstrumentName");
+                bulk.ColumnMappings.Add("ReceivedAt", "ReceivedAt");
+
+                bulk.WriteToServer(dt);
+            }
+            catch (Exception ex)
+            {
+                SignalDiagnostics.Reject(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertTicksBulk failed: {ex.Message}");
                 throw;
             }
         }
 
         public static void InsertCandle(Candle c, uint token, string name, bool isPaper = true)
-           {
-            try 
+        {
+            try
             {
                 using var conn = new SqlConnection(_cs);
                 conn.Open();
 
-            var interval = $"{Config.Current.Trading.TimeframeMinutes}m"; // e.g. "5m"
+                var interval = $"{Config.Current.Trading.TimeframeMinutes}m"; // e.g. "5m"
 
-            conn.Execute(@"
+                // Convert candle time (internal UTC) to IST for DB
+                var candleTimeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(c.Time);
+
+                conn.Execute(@"
 INSERT INTO dbo.Candles(InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
 VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
-                    new { token = (long)token, name, Interval = interval, time = c.Time, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
+                    new { token = (long)token, name, Interval = interval, time = candleTimeIst, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
 
             }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"Insert Candle failed: {ex.Message}");
+                SignalDiagnostics.Reject(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"Insert Candle failed: {ex.Message}");
             }
-}
+        }
 
-            public static void InsertSignal(Signal s, uint token, string name, bool isPaper = true)
-            {
-                using var conn = new SqlConnection(_cs);
-                conn.Open();
-                conn.Execute(@"
+        public static void InsertSignal(Signal s, uint token, string name, bool isPaper = true)
+        {
+            using var conn = new SqlConnection(_cs);
+            conn.Open();
+            conn.Execute(@"
 INSERT INTO dbo.Signals(InstrumentToken, InstrumentName, SignalType, Price, Note, CreatedAt)
 VALUES(@token, @name, @type, @price, @note, @createdAt)",
-                    new { token = (long)token, name, type = s.Type.ToString(), price = s.Price, note = s.Note ?? "", createdAt = SessionClock.NowIst() });
-            }
+                new { token = (long)token, name, type = s.Type.ToString(), price = s.Price, note = s.Note ?? "", createdAt = SessionClock.NowIst() });
+        }
 
         public static List<Candle> LoadRecentCandlesAggregated(long token, int bars, int tfMinutes, DateTime startDate)
-
         {
             try
             {
@@ -167,20 +265,25 @@ FROM G g
 GROUP BY InstrumentToken, InstrumentName, Interval,BarTime
 ORDER BY Time DESC;";
                 using var conn = new SqlConnection($"{_cs}");
-                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes, startDate }, commandTimeout: 300).ToList();
+                // normalize input startDate (accept UTC internal) -> convert to IST for DB
+                var startIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(startDate));
+                var rows = conn.Query<Candle>(sql, new { tok = token, bars, tf = tfMinutes, startDate = startIst }, commandTimeout: 300).ToList();
+                // DB stores IST; convert to UTC for internal use
+                foreach (var r in rows)
+                {
+                    r.Time = TimeZoneInfo.ConvertTimeToUtc(r.Time, IST);
+                }
                 rows.Reverse();
                 return rows;
             }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"LoadRecentCandlesAggregated failed: {ex.Message}");
+                SignalDiagnostics.Reject(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"LoadRecentCandlesAggregated failed: {ex.Message}");
                 return new List<Candle>();
             }
         }
 
-
         public static Candle LoadInRangeCandlesAggregated(long token, int tfMinutes, DateTime startDate)
-
         {
             try
             {
@@ -206,12 +309,19 @@ GROUP BY InstrumentToken, InstrumentName, Interval,BarTime
 ORDER BY Time DESC;";
 
                 using var conn = new SqlConnection($"{_cs}");
-                var rows = conn.Query<Candle>(sql, new { tok = token, tf = tfMinutes, startDate }, commandTimeout: 300).ToList();
-                return rows?.FirstOrDefault();
+                var startIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(startDate));
+                var rows = conn.Query<Candle>(sql, new { tok = token, tf = tfMinutes, startDate = startIst }, commandTimeout: 300).ToList();
+                if (rows != null && rows.Count > 0)
+                {
+                    var first = rows.First();
+                    first.Time = TimeZoneInfo.ConvertTimeToUtc(first.Time, IST);
+                    return first;
+                }
+                return null;
             }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(0, "DataAccess", SessionClock.NowIst(), $"LoadInRangeCandlesAggregated failed: {ex.Message}");
+                SignalDiagnostics.Reject(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"LoadInRangeCandlesAggregated failed: {ex.Message}");
                 return null;
             }
         }
@@ -242,7 +352,13 @@ ORDER BY [Time];
 
             using var conn = new SqlConnection(_cs);
             conn.Open();
-            return conn.Query<Candle>(sql, new { tok = token, from, to, tf = tfMinutes }).ToList();
+            var fromIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(from));
+            var toIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(to));
+            var rows = conn.Query<Candle>(sql, new { tok = token, from = fromIst, to = toIst, tf = tfMinutes }).ToList();
+            // convert DB IST times to UTC for internal use
+            foreach (var r in rows)
+                r.Time = TimeZoneInfo.ConvertTimeToUtc(r.Time, IST);
+            return rows;
         }
 
         public static void SaveInstrumentSnapshotToDb(DateTime snapshotDate, IEnumerable<InstrumentInfo> instruments)
@@ -263,7 +379,7 @@ VALUES(@date, @token, @symbol, @name, @expiry, @strike, @tickSize, @lot, @itype,
                     name = i.Name,
                     expiry = string.IsNullOrWhiteSpace(i.Expiry?.ToString()) ? (DateTime?)null : DateTime.Parse(i.Expiry?.ToString()),
                     strike = i.Strike,
-                    tickSize = i.TickSize,
+                    tick = i.TickSize,
                     lot = i.LotSize,
                     itype = i.InstrumentType,
                     segment = i.Segment,
@@ -320,9 +436,10 @@ SELECT TOP (1) InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume,
 FROM dbo.Ticks with (nolock)
 WHERE InstrumentToken = @tok AND TickTime > @t
 ORDER BY TickTime ASC";
-            var r = conn.QueryFirstOrDefault(sql, new { tok = token, t = afterTime });
+            var afterIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(afterTime));
+            var r = conn.QueryFirstOrDefault(sql, new { tok = token, t = afterIst });
             if (r == null) return null;
-            return new TickData
+            var ret = new TickData
             {
                 InstrumentToken = (uint)(long)r.InstrumentToken,
                 InstrumentName = r.InstrumentName,
@@ -340,8 +457,10 @@ ORDER BY TickTime ASC";
                 BidQty1 = (long?)r.BidQty1 ?? 0,
                 AskPrice1 = (double?)r.AskPrice1 ?? 0,
                 AskQty1 = (long?)r.AskQty1 ?? 0,
-                TickTime = (DateTime)r.TickTime
+                // DB stores IST, convert to UTC for internal use
+                TickTime = TimeZoneInfo.ConvertTimeToUtc((DateTime)r.TickTime, IST)
             };
+            return ret;
         }
 
         public static List<TickData> GetTicksRange(DateTime start, DateTime end)
@@ -354,9 +473,16 @@ SELECT InstrumentToken, InstrumentName, LastPrice, LastQuantity, Volume, Average
 FROM dbo.Ticks with (nolock)
 WHERE TickTime BETWEEN @s AND @e
 ORDER BY TickTime ASC";
-            return conn.Query<TickData>(sql, new { s = start, e = end }).ToList();
+            var startIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(start));
+            var endIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(end));
+            var rows = conn.Query<TickData>(sql, new { s = startIst, e = endIst }).ToList();
+            // convert TickTime from DB IST to UTC
+            foreach (var t in rows)
+            {
+                t.TickTime = TimeZoneInfo.ConvertTimeToUtc(t.TickTime, IST);
+            }
+            return rows;
         }
-
 
         public static List<TickData> GetTicksRangeForTokens(long[] tokens, DateTime start, DateTime end)
         {
@@ -369,7 +495,12 @@ FROM dbo.Ticks  with (nolock)
 WHERE TickTime >= @s AND TickTime < @e
 AND InstrumentToken IN @tokens
 ORDER BY TickTime ASC";
-            return conn.Query<TickData>(sql, new { s = start, e = end, tokens }, commandTimeout: 100).ToList();
+            var startIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(start));
+            var endIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(end));
+            var rows = conn.Query<TickData>(sql, new { s = startIst, e = endIst, tokens }, commandTimeout: 100).ToList();
+            foreach (var t in rows)
+                t.TickTime = TimeZoneInfo.ConvertTimeToUtc(t.TickTime, IST);
+            return rows;
         }
 
         public static IEnumerable<TickData> StreamTicksRange(long[] tokens, DateTime start, DateTime end)
@@ -384,8 +515,8 @@ WHERE TickTime BETWEEN @s AND @e
 ORDER BY TickTime ASC";
 
             var dp = new DynamicParameters();
-            dp.Add("@s", start);
-            dp.Add("@e", end);
+            dp.Add("@s", ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(start)));
+            dp.Add("@e", ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(end)));
 
             var rdr = conn.Query<dynamic>(sql, dp, buffered: false);
             foreach (var r in rdr)
@@ -408,7 +539,7 @@ ORDER BY TickTime ASC";
                     BidQty1 = (long?)r.BidQty1 ?? 0,
                     AskPrice1 = (double?)r.AskPrice1 ?? 0,
                     AskQty1 = (long?)r.AskQty1 ?? 0,
-                    TickTime = (DateTime)r.TickTime
+                    TickTime = TimeZoneInfo.ConvertTimeToUtc((DateTime)r.TickTime, IST)
                 };
             }
         }
@@ -417,8 +548,9 @@ ORDER BY TickTime ASC";
         {
             using var conn = new SqlConnection(_cs);
             conn.Open();
-            var s = day.Date;
-            var e = day.Date.AddDays(1).AddSeconds(-1);
+            var dayIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(day));
+            var s = dayIst.Date;
+            var e = dayIst.Date.AddDays(1).AddSeconds(-1);
             string pat = $"%{strike}%{ceOrPe}%";
             var sql = @"
 SELECT DISTINCT InstrumentToken, InstrumentName

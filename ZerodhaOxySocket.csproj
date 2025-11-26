@@ -4,6 +4,8 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="OxyPlot.Wpf" Version="2.2.0" />
@@ -13,6 +15,14 @@
     <PackageReference Include="System.Data.SqlClient" Version="4.8.6" />
     <PackageReference Include="Tech.Zerodha.KiteConnect" Version="4.3.0" />
   </ItemGroup>
+
+  <!-- Exclude benchmark project files (subfolder) from being picked up by default globs -->
+  <ItemGroup>
+    <Compile Remove="BenchmarkSuite1\**\*.cs" />
+    <None Remove="BenchmarkSuite1\**\*" />
+    <EmbeddedResource Remove="BenchmarkSuite1\**\*" />
+  </ItemGroup>
+
   <ItemGroup>
     <None Include="config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

@@ -27,6 +27,8 @@
         <StatusBar DockPanel.Dock="Bottom">
       <StatusBarItem><TextBlock x:Name="txtStatus" Text="⚠️ No access token. Use File → Refresh Access Token first."/></StatusBarItem>
       <StatusBarItem><TextBlock x:Name="txtTickStats" Text="Ticks: 0 • Last: —"/></StatusBarItem>
+      <StatusBarItem><TextBlock x:Name="txtPipelineStats" Text="Pipeline: Enq 0 Dropped 0"/></StatusBarItem>
+      <StatusBarItem><TextBlock x:Name="txtOrderStats" Text="OrderPipe: Enq 0 Dropped 0"/></StatusBarItem>
     </StatusBar>
 
         <DockPanel>

@@ -5,18 +5,24 @@ using System.Linq;
 
 namespace ZerodhaOxySocket
 {
-    public static class OrderManager
+    public class OrderManager
     {
-        private static readonly ConcurrentDictionary<Guid, OrderRecord> _orders = new();
-        private static readonly ConcurrentDictionary<Guid, double> _fav = new(); // most favorable price since entry
+        // Singleton instance for easy migration (optional, can be removed for full DI)
+        private static OrderManager _instance;
+        public static OrderManager Instance => _instance ??= new OrderManager();
 
-        public static void CreateOrder(OrderRecord order)
+        private readonly ConcurrentDictionary<Guid, OrderRecord> _orders = new();
+        private readonly ConcurrentDictionary<Guid, double> _fav = new(); // most favorable price since entry
+
+        public OrderManager() { }
+
+        public void CreateOrder(OrderRecord order)
         {
             _orders[order.OrderId] = order;
             // Optional: persist placed row using your DataAccess if needed
         }
 
-        public static void AttachFill(OrderRecord order, SimTrade fill)
+        public void AttachFill(OrderRecord order, SimTrade fill)
         {
             if (fill == null || fill.EntryPrice <= 0) { order.Status = OrderStatus.Unfilled; return; }
 
@@ -29,7 +35,7 @@ namespace ZerodhaOxySocket
             _fav[order.OrderId] = order.EntryPrice; // initialize
         }
 
-        public static void MarkClosed(Guid orderId, double exitPrice, DateTime exitTime, string reason)
+        public void MarkClosed(Guid orderId, double exitPrice, DateTime exitTime, string reason)
         {
             if (!_orders.TryGetValue(orderId, out var o)) return;
             o.ExitPrice = exitPrice;
@@ -48,22 +54,35 @@ namespace ZerodhaOxySocket
             _fav.TryRemove(orderId, out _);
         }
 
-        public static bool HasOpenPositionForUnderlying(long underlyingToken)
+        public bool HasOpenPositionForUnderlying(long underlyingToken)
         {
             return _orders.Values.Any(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Open);
         }
 
-        public static int GetOpenOrdersCountForUnderlying(long underlyingToken)
+        
+        public bool HasOpenPositionForInstrument(long instrumentToken)
+        {
+            return _orders.Values.Any(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Open);
+        }
+
+        public List<OrderRecord> GetOpenOrdersForInstrument(long instrumentToken)
+        {
+            return _orders.Values
+                .Where(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Open)
+                .ToList();
+        }
+
+        public int GetOpenOrdersCountForUnderlying(long underlyingToken)
         {
             return _orders.Values.Count(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Open);
         }
 
-        public static List<OrderRecord> GetOpenOrdersForUnderlying(long underlyingToken)
+        public List<OrderRecord> GetOpenOrdersForUnderlying(long underlyingToken)
         {
             return _orders.Values.Where(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Open).ToList();
         }
 
-        public static double GetFavorablePrice(Guid orderId, double lastPrice, string side)
+        public double GetFavorablePrice(Guid orderId, double lastPrice, string side)
         {
             if (!_fav.TryGetValue(orderId, out var f)) f = lastPrice;
             if (side == "BUY") f = Math.Max(f, lastPrice);  // higher is favorable
@@ -71,7 +90,7 @@ namespace ZerodhaOxySocket
             return f;
         }
 
-        public static void UpdateFavorablePrice(Guid orderId, double favorable)
+        public void UpdateFavorablePrice(Guid orderId, double favorable)
         {
             _fav[orderId] = favorable;
         }

@@ -1,17 +1,21 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace ZerodhaOxySocket
 {
-    public static class TickPipeline
+    /// <summary>
+    /// Dedicated pipeline for order-related processing.
+    /// Partitioned by token to preserve per-instrument ordering while allowing parallelism across instruments.
+    /// </summary>
+    public static class OrderPipeline
     {
         private static readonly int Partitions = Math.Max(1, Environment.ProcessorCount / 2);
         private static readonly Channel<TickData>[] _channels;
         private static readonly Task[] _consumerTasks;
 
-        // Counters (thread-safe)
+        // Counters
         private static long _totalEnqueued = 0;
         private static long _totalDropped = 0;
         public static long TotalEnqueued => Interlocked.Read(ref _totalEnqueued);
@@ -19,40 +23,34 @@ namespace ZerodhaOxySocket
 
         private static bool _started = false;
 
-        static TickPipeline()
+        static OrderPipeline()
         {
             _channels = new Channel<TickData>[Partitions];
             _consumerTasks = new Task[Partitions];
 
             for (int i = 0; i < Partitions; i++)
             {
-                var opts = new BoundedChannelOptions(100000)
+                var opts = new BoundedChannelOptions(10000)
                 {
                     SingleReader = true,
                     SingleWriter = false,
-                    FullMode = BoundedChannelFullMode.DropWrite // or DropOldest
+                    FullMode = BoundedChannelFullMode.DropWrite
                 };
                 _channels[i] = Channel.CreateBounded<TickData>(opts);
                 _consumerTasks[i] = StartConsumer(_channels[i].Reader);
             }
         }
 
-        /// <summary>
-        /// Explicit start to make pipeline activation deterministic from UI/startup code.
-        /// Calling Start will also ensure OrderPipeline is started.
-        /// </summary>
         public static void Start()
         {
             if (_started) return;
             _started = true;
-            // Ensure underlying order pipeline is initialized
-            try { OrderPipeline.Start(); } catch { }
-            // Access a field to ensure static ctor has run (it will have run before this call normally)
-            _ = Partitions;
+            _ = Partitions; // touch to ensure static ctor executed
         }
 
-        public static bool EnqueueTick(TickData t)
+        public static bool EnqueueOrder(TickData t)
         {
+            if (t == null) return false;
             var idx = (int)(t.InstrumentToken % (uint)Partitions);
             bool ok = _channels[idx].Writer.TryWrite(t);
             if (ok) Interlocked.Increment(ref _totalEnqueued);
@@ -68,29 +66,12 @@ namespace ZerodhaOxySocket
                 {
                     try
                     {
-                        // 1) update in-memory candles / indicators
-                        TickHub.Instance.ProcessTickFromPipeline(tick);
-
-                        // 2) if there are open orders for this instrument, enqueue to the dedicated order pipeline
-                        try
-                        {
-                            if (OrderManager.Instance.HasOpenPositionForInstrument(tick.InstrumentToken))
-                            {
-                                if (!OrderPipeline.EnqueueOrder(tick))
-                                {
-                                    SignalDiagnostics.Warn(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline enqueue failed - dropped");
-                                }
-                            }
-                        }
-                        catch (Exception exOrder)
-                        {
-                            // Safely log and continue
-                            SignalDiagnostics.Reject(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "Order routing failed: " + exOrder.Message);
-                        }
+                        // Process signal/order in dedicated pipeline
+                        TickHub.Instance.ProcessSignalOrder(tick, Guid.Empty);
                     }
                     catch (Exception ex)
                     {
-                        SignalDiagnostics.Reject(tick.InstrumentToken, "", DateTime.UtcNow, "Pipeline consumer error: " + ex.Message);
+                        SignalDiagnostics.Reject(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline consumer error: " + ex.Message);
                     }
                 }
             });
@@ -106,9 +87,6 @@ namespace ZerodhaOxySocket
                 await Task.WhenAll(_consumerTasks).ConfigureAwait(false);
             }
             catch { }
-
-            // stop order pipeline as well
-            try { await OrderPipeline.StopAsync().ConfigureAwait(false); } catch { }
         }
     }
 }

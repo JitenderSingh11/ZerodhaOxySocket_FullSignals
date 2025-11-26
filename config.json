@@ -4,21 +4,25 @@
   "AccessToken": "",
   "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;Connection Timeout=300",
 
-  "DefaultTimeframeMinutes": 1,
+  "DefaultTimeframeMinutes": 5,
   "PaperTrade": true,
   "EnableSimulator": false,
   "SubscribedInstruments": [
     {
       "Token": 256265,
       "Name": "NIFTY",
-      "TimeframeMinutes": 1
-    }
-  ],
-  "AutoSubscribe": [
-    {
       "Symbol": "NIFTY",
-      "Range": 10
+      "Range": 10,
+      "TimeframeMinutes": 5
+    },
+    {
+      "Token": 260105,
+      "Name": "BANKNIFTY",
+      "Symbol": "BANKNIFTY",
+      "Range": 10,
+      "TimeframeMinutes": 5
     }
+
   ],
   "CandleBuilder": {
     "Enabled": true,
@@ -58,5 +62,13 @@
     "MinBodyPct": 0.08,
     "MinRangeAtr": 0.4,
     "SeedBars": 300
+  },
+  "TickWriter": {
+    "Partitions": 0,
+    "ChannelCapacity": 50000,
+    "MaxConcurrentBulkWrites": 2,
+    "DbBatchSize": 1000,
+    "DbFlushIntervalSeconds": 2,
+    "MaxAllowedTickDelaySeconds": 8
   }
 }

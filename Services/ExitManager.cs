@@ -4,18 +4,28 @@ using System.Linq;
 
 namespace ZerodhaOxySocket
 {
-    public static class ExitManager
+    public class ExitManager
     {
-        private static readonly Dictionary<Guid, OrderRecord> _open = new();
+        // Singleton instance for migration convenience
+        private static ExitManager _instance;
+        public static ExitManager Instance => _instance ??= new ExitManager();
 
-        public static void Track(OrderRecord order)
+        private readonly Dictionary<Guid, OrderRecord> _open = new();
+        private readonly OrderManager _orderManager;
+
+        public ExitManager()
+        {
+            _orderManager = OrderManager.Instance;
+        }
+
+        public void Track(OrderRecord order)
         {
             if (order == null) return;
             _open[order.OrderId] = order;
         }
 
         // Call this for every option tick (see TickHub patch below)
-        public static void OnOptionTick(long token, double lastPrice, DateTime tickTime)
+        public void OnOptionTick(long token, double lastPrice, DateTime tickTime)
         {
             foreach (var kv in _open.ToArray())
             {
@@ -37,7 +47,7 @@ namespace ZerodhaOxySocket
                 double stop = (o.Side == "BUY") ? (o.EntryPrice - stopDist) : (o.EntryPrice + stopDist);
 
                 // track most favorable price since entry
-                double favorable = OrderManager.GetFavorablePrice(o.OrderId, lastPrice, o.Side);
+                double favorable = _orderManager.GetFavorablePrice(o.OrderId, lastPrice, o.Side);
                 double trail = (o.Side == "BUY") ? (favorable - trailDist) : (favorable + trailDist);
 
                 double trigger = (o.Side == "BUY") ? Math.Max(stop, trail) : Math.Min(stop, trail);
@@ -52,12 +62,12 @@ namespace ZerodhaOxySocket
                         ((o.Side == "BUY" && lastPrice <= stop) || (o.Side == "SELL" && lastPrice >= stop)) ? "ATR Stop" : "ATR Trail";
 
                     OrderSimulator.CloseSimTrade(o.ReplayId, o.InstrumentToken, lastPrice, tickTime, reason);
-                    OrderManager.MarkClosed(o.OrderId, lastPrice, tickTime, reason);
+                    _orderManager.MarkClosed(o.OrderId, lastPrice, tickTime, reason);
                     _open.Remove(o.OrderId);
                 }
                 else
                 {
-                    OrderManager.UpdateFavorablePrice(o.OrderId, favorable);
+                    _orderManager.UpdateFavorablePrice(o.OrderId, favorable);
                 }
             }
         }

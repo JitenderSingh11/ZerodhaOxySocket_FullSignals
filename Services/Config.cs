@@ -67,11 +67,40 @@ namespace ZerodhaOxySocket
         public List<string> Intervals { get; set; } = new() { "1m", "5m", "15m" };
         public EmailConfig EmailNotification { get; set; } = new();
     }
-    public class AutoSubConfig
+
+    public class TickWriterConfig
     {
-        public string Symbol { get; set; } = "NIFTY";
-        public int Range { get; set; } = 10;
+        /// <summary>
+        /// Number of partitions for the writer. 0 means auto (ProcessorCount/2).
+        /// </summary>
+        public int Partitions { get; set; } = 0;
+
+        /// <summary>
+        /// Total channel capacity (will be divided among partitions).
+        /// </summary>
+        public int ChannelCapacity { get; set; } = 100000;
+
+        /// <summary>
+        /// Maximum concurrent SqlBulkCopy operations.
+        /// </summary>
+        public int MaxConcurrentBulkWrites { get; set; } = 2;
+
+        /// <summary>
+        /// Batch size for each bulk insert.
+        /// </summary>
+        public int DbBatchSize { get; set; } = 1000;
+
+        /// <summary>
+        /// Flush interval in seconds.
+        /// </summary>
+        public int DbFlushIntervalSeconds { get; set; } = 2;
+
+        /// <summary>
+        /// Maximum allowed tick delay in seconds before dropping the tick.
+        /// </summary>
+        public int MaxAllowedTickDelaySeconds { get; set; } = 8;
     }
+
 
     public class AppConfig
     {
@@ -83,11 +112,14 @@ namespace ZerodhaOxySocket
         public bool PaperTrade { get; set; } = true;
         public bool EnableSimulator { get; set; } = false;
         public List<SubscribedInstrument> SubscribedInstruments { get; set; } = new();
-        public List<AutoSubConfig> AutoSubscribe { get; set; } = new() { new AutoSubConfig { Symbol = "NIFTY", Range = 10 } };
+
         public CandleBuilderConfig CandleBuilder { get; set; } = new();
 
         [JsonProperty("Trading")]
         public TradingSettings Trading { get; set; } = new();
+
+        // TickWriter settings
+        public TickWriterConfig TickWriter { get; set; } = new();
     }
     
     public class SubscribedInstrument
@@ -95,5 +127,9 @@ namespace ZerodhaOxySocket
         public long Token { get; set; }
         public string Name { get; set; } = "";
         public int TimeframeMinutes { get; set; } = 1;
+
+        public string Symbol { get; set; }
+         
+        public int Range { get; set; } = 10;
     }
 }

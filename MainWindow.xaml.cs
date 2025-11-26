@@ -7,10 +7,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
+using System.Windows.Media;
+using System.ComponentModel;
 using ZerodhaOxySocket.Helpers;
+using ZerodhaOxySocket.MultiSockets;
 using ZerodhaOxySocket.Services;
 
 namespace ZerodhaOxySocket
@@ -28,6 +33,23 @@ namespace ZerodhaOxySocket
         private bool _autoScroll = true;                       // enable/disable auto scroll
         private TimeSpan _autoScrollWindow = TimeSpan.FromMinutes(60); // visible window size
         private double _autoPaddingMinutes = 1.0;              // small padding on right in minutes
+
+        private TickWriter _tickWriter;
+        private CandleAggregator _candleAgg;
+        private SignalEngine _signalEngine;
+        private BulkCollector _bulkCollector;
+        private OptionSelectorService _optionSelector;
+
+        // UI timer for showing pipeline counters (cheap: 1s interval)
+        private DispatcherTimer _statusTimer;
+
+        // Alerting state and thresholds
+        private long _prevTickEnq = 0, _prevTickDrop = 0, _prevOrderEnq = 0, _prevOrderDrop = 0;
+        private DateTime _lastAlertTime = DateTime.MinValue;
+        private readonly TimeSpan _alertCooldown = TimeSpan.FromSeconds(30);
+        private const double TickDropRateThreshold = 0.01; // 1%
+        private const int TickDropAbsoluteThreshold = 20;  // 20 dropped ticks in interval
+        private const int OrderDropAbsoluteThreshold = 1;  // any order drop
 
         public MainWindow()
         {
@@ -67,6 +89,9 @@ namespace ZerodhaOxySocket
             LoadConfig();
             UpdateMenuState();
 
+            // subscribe to closing for graceful shutdown
+            this.Closing += MainWindow_Closing;
+
             _ = InstrumentCatalog.EnsureTodayAsync()
     .ContinueWith(t =>
     {
@@ -99,8 +124,8 @@ namespace ZerodhaOxySocket
             SignalDiagnostics.AlsoConsoleWrite = true;
 
 
-            TickHub.OnStatus += s => Dispatcher.Invoke(() => txtStatus.Text = s);
-            TickHub.OnLtp += (token, ltp, vol) => Dispatcher.Invoke(() =>
+            TickHub.Instance.OnStatus += s => Dispatcher.Invoke(() => txtStatus.Text = s);
+            TickHub.Instance.OnLtp += (token, ltp, vol) => Dispatcher.Invoke(() =>
             {
                 _tickCount++;
                 _lastTickLocal = Clock.NowIst();
@@ -109,12 +134,12 @@ namespace ZerodhaOxySocket
                 AppendLog($"Tick {token}: LTP={ltp:F2} Vol={vol}");
             });
 
-            TickHub.OnCandleClosed += (s, e) => Dispatcher.Invoke(() =>
+            TickHub.Instance.OnCandleClosed += (s, e) => Dispatcher.Invoke(() =>
             {
                 AppendLog($"Candle {e.InstrumentName} O:{e.Candle.Open:F2} H:{e.Candle.High:F2} L:{e.Candle.Low:F2} C:{e.Candle.Close:F2} V:{e.Candle.Volume}");
                 AddCandle(e.Candle);
             });
-            TickHub.OnSignal += (s, e) => Dispatcher.Invoke(() =>
+            TickHub.Instance.OnSignal += (s, e) => Dispatcher.Invoke(() =>
             {
                 AppendLog($"SIGNAL {e.InstrumentName}: {e.Signal.Type} @ {e.Signal.Price:F2}");
             });
@@ -136,6 +161,168 @@ namespace ZerodhaOxySocket
                 }
             });
 
+            TickHub.Instance.OnOrderCreated += TickHub_OnOrderCreated;
+
+            // Start lightweight UI timer to refresh pipeline counters once per second (cheap)
+            _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _statusTimer.Tick += (s, e) =>
+            {
+                try
+                {
+                    // update texts
+                    txtPipelineStats.Text = $"TickPipe Enq:{TickPipeline.TotalEnqueued:n0} Dropped:{TickPipeline.TotalDropped:n0}";
+                    txtOrderStats.Text = $"OrderPipe Enq:{OrderPipeline.TotalEnqueued:n0} Dropped:{OrderPipeline.TotalDropped:n0}";
+
+                    // compute deltas
+                    var te = TickPipeline.TotalEnqueued; var td = TickPipeline.TotalDropped;
+                    var oe = OrderPipeline.TotalEnqueued; var od = OrderPipeline.TotalDropped;
+
+                    var dEnq = te - _prevTickEnq; var dDrop = td - _prevTickDrop;
+                    var oEnq = oe - _prevOrderEnq; var oDrop = od - _prevOrderDrop;
+
+                    _prevTickEnq = te; _prevTickDrop = td; _prevOrderEnq = oe; _prevOrderDrop = od;
+
+                    double dropRate = dEnq > 0 ? (double)dDrop / dEnq : (dDrop > 0 ? 1.0 : 0.0);
+
+                    bool tickAlert = dDrop >= TickDropAbsoluteThreshold || dropRate >= TickDropRateThreshold;
+                    bool orderAlert = oDrop >= OrderDropAbsoluteThreshold;
+
+                    var nowUtc = DateTime.UtcNow;
+
+                    // Visual state
+                    txtPipelineStats.Foreground = tickAlert ? Brushes.OrangeRed : Brushes.Black;
+                    txtOrderStats.Foreground = orderAlert ? Brushes.OrangeRed : Brushes.Black;
+
+                    // TickWriter metrics (cheap read)
+                    if (_tickWriter != null)
+                    {
+                        // optionally show in the log every 10s or so; keep UI cheap
+                        var tb = _tickWriter;
+                        // show last batch and averages in tooltip
+                        txtPipelineStats.ToolTip = $"TickWriter BulkWrites:{tb.TotalBulkWrites} LastBatch:{tb.LastBulkBatchSize} AvgBatch:{tb.AverageBulkBatchSize:F1} AvgWriteMs:{tb.AverageBulkWriteMs:F1}";
+                    }
+
+                    // Log/cooldown alert
+                    if ((tickAlert || orderAlert) && (nowUtc - _lastAlertTime) > _alertCooldown)
+                    {
+                        _lastAlertTime = nowUtc;
+                        AppendLog($"ALERT: TickDropDelta={dDrop} DropRate={dropRate:P2} OrderDropDelta={oDrop}");
+                        // Optionally show a non-blocking notification (MessageBox is blocking; avoid it by default)
+                        // MessageBox.Show("Pipeline alert: drops detected. Check logs.", "Alert", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                }
+                catch { }
+            };
+            _statusTimer.Start();
+        }
+
+        private void MainWindow_Closing(object sender, CancelEventArgs e)
+        {
+            try
+            {
+                AppendLog("Shutdown: stopping pipelines...");
+                // Stop tick pipeline (and order pipeline)
+                Task.Run(() => TickPipeline.StopAsync()).GetAwaiter().GetResult();
+
+                if (_tickWriter != null)
+                {
+                    AppendLog("Stopping TickWriter...");
+                    _tickWriter.StopAsync().GetAwaiter().GetResult();
+                }
+
+                try { _bulkCollector?.Dispose(); } catch { }
+                try { (_signalEngine as IDisposable)?.Dispose(); } catch { }
+
+                AppendLog("Shutdown complete.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Shutdown error: {ex.Message}");
+            }
+        }
+
+        private void TickHub_OnOrderCreated(object sender, OrderCreatedEventArgs e)
+        {
+            var order = e.Order;
+            _signalEngine.Subscribe(new Dictionary<uint, string>
+            {
+              { (uint)order.InstrumentToken, order.InstrumentName }
+              });
+             Dispatcher.Invoke(() => AppendLog($"Order created for {order.InstrumentName} [{order.InstrumentToken}]"));
+        }
+
+        private void RegisterClasses()
+        {
+            var apiKey = _config.ApiKey;
+            var accessToken = _config.AccessToken;
+            var sqlConn = _config.SqlConnectionString;
+
+
+            // Initialize services
+            var twCfg = _config.TickWriter ?? new TickWriterConfig();
+            int capacity = twCfg.ChannelCapacity > 0 ? twCfg.ChannelCapacity : 50000;
+            int partitions = twCfg.Partitions;
+            int maxConcurrent = Math.Max(1, twCfg.MaxConcurrentBulkWrites);
+            int dbBatch = Math.Max(1, twCfg.DbBatchSize);
+            int dbFlush = Math.Max(1, twCfg.DbFlushIntervalSeconds);
+            int maxDelay = Math.Max(1, twCfg.MaxAllowedTickDelaySeconds);
+
+            _tickWriter = new TickWriter(capacity: capacity, partitions: partitions, maxConcurrentBulkWrites: maxConcurrent, dbBatchSize: dbBatch, dbFlushIntervalSeconds: dbFlush, maxAllowedTickDelaySeconds: maxDelay);
+            _candleAgg = new CandleAggregator();
+            _signalEngine = new SignalEngine(apiKey, accessToken, _candleAgg);
+            _bulkCollector = new BulkCollector(apiKey, accessToken, _tickWriter);
+            _optionSelector = new OptionSelectorService();
+
+            // Subscribe to underlying indices (e.g., NIFTY and BANKNIFTY)
+            var underlyingTokens = new Dictionary<uint, string>();
+            foreach (var inst in _config.SubscribedInstruments)
+            {
+                uint token = (uint)inst.Token;
+                if (!underlyingTokens.ContainsKey(token))
+                    underlyingTokens[token] = inst.Name;
+            }
+
+            _signalEngine.Subscribe(underlyingTokens);
+
+            // Subscribe to signals to place trades
+            _signalEngine.OnSignal += (s, e) =>
+            {
+                AppendLog($"Signal: {e.InstrumentName} {e.Signal.Type} @ {e.Signal.Price:F2}");
+                // Determine CE or PE and select option
+                string side = (e.Signal.Type == SignalType.Buy) ? "CE" : "PE";
+                var option = _optionSelector.ChooseATMOption(DateTime.Today, e.Signal.Price, side);
+                if (option != null)
+                {
+                    uint optToken = (uint)option.InstrumentToken;
+                    // Place order here (omitted). Then monitor:
+                    double entry = e.Signal.Price; // placeholder
+                    double target = entry * 1.05; // example target +5%
+                    double stop = entry * 0.98; // example stop -2%
+                    var monitor = new TradeMonitor(optToken, entry, target, stop);
+                    _bulkCollector.TickReceived += monitor.OnTick;
+                    monitor.OnTradeClosed += tm =>
+                    {
+                        AppendLog($"Trade closed for token {tm.InstrumentToken}.");
+                        _bulkCollector.TickReceived -= monitor.OnTick;
+                    };
+                }
+            };
+
+            // Subscribe to candle completion to update UI/plots
+            _candleAgg.CandleCompleted += (s, e) =>
+            {
+                Dispatcher.Invoke(() => {
+                    AppendLog($"Candle ({e.Token}) O{e.Candle.Open:F2} H{e.Candle.High:F2} L{e.Candle.Low:F2} C{e.Candle.Close:F2}");
+                    // Update chart series here...
+                });
+            };
+
+            // Connect collectors (if not done in constructor)
+            // Assuming BulkCollector and SignalEngine already connected in constructors
+            // So just subscribe to option tokens as needed:
+            // e.g. subscribe to first set of option tokens for initial interest
+            var optionTokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config); // placeholder for your list
+            _bulkCollector.Subscribe(optionTokens);
         }
 
         private void AppendLog(string line)
@@ -179,9 +366,11 @@ namespace ZerodhaOxySocket
                 return;
             }
 
-            TickHub.Init(_config.ApiKey, _config.AccessToken, _config.SqlConnectionString);
+            TickHub.Instance.Init(_config, _config.ApiKey, _config.AccessToken, _config.SqlConnectionString);
             TickPipeline.Start();
-            TickHub.Connect();
+            //TickHub.Connect();
+
+            RegisterClasses();
 
             _ = InstrumentCatalog.EnsureTodayAsync()
     .ContinueWith(t =>
@@ -208,10 +397,10 @@ namespace ZerodhaOxySocket
                 });
 
                 
-                var tokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config).ToList();
+                //var tokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config).ToList();
 
-                if (tokens.Count > 0)
-                    TickHub.SubscribeAuto(tokens);
+                //if (tokens.Count > 0)
+                //   TickHub.SubscribeAuto(tokens);
             
 
             txtStatus.Text = "Connecting...";
@@ -229,7 +418,7 @@ namespace ZerodhaOxySocket
             foreach (var sub in _config.SubscribedInstruments)
             {
                 AddInstrumentTab((uint)sub.Token, sub.Name);
-                TickHub.SubscribeManual((uint)sub.Token);
+                TickHub.Instance.SubscribeManual((uint)sub.Token);
                 AppendLog($"Subscribed (tab): {sub.Name} [{sub.Token}]");
             }
         }
@@ -263,7 +452,7 @@ namespace ZerodhaOxySocket
             var tab = InstrumentsTab.Items.OfType<TabItem>().FirstOrDefault(t => (uint)t.Tag == token);
             if (tab != null) InstrumentsTab.Items.Remove(tab);
             if (_plots.ContainsKey(token)) _plots.Remove(token);
-            TickHub.UnsubscribeManual(token);
+            TickHub.Instance.UnsubscribeManual(token);
         }
 
         private void UpdateChartTitle(uint token, double ltp)

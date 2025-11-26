@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using static ZerodhaOxySocket.ReplayWindow;
@@ -18,7 +19,28 @@ namespace ZerodhaOxySocket
 
         public ReplayMode Mode { get; set; } = ReplayMode.Candle; // default
         public int CandleTfMinutes { get; set; } = 5; // used when Mode == Candle
+
+        public List<SubscribedInstrument> SubscribedInstruments { get; set; } = new List<SubscribedInstrument>
+        {
+            new SubscribedInstrument
+            {
+                Token = 256265,
+                Name = "NIFTY",
+                Symbol = "NIFTY",
+                Range = 10,
+                TimeframeMinutes = 5
+            },
+            new SubscribedInstrument
+            {
+                Token = 260105,
+                Name = "BANKNIFTY",
+                Symbol = "BANKNIFTY",
+                Range = 10,
+                TimeframeMinutes = 5
+            }
+        };
     }
+
 
     public class ReplayEngine
     {
@@ -50,7 +72,7 @@ namespace ZerodhaOxySocket
         private void RunLoop(CancellationToken ct)
         {
 
-            TickHub.ReplayInit(_cfg);
+            TickHub.Instance.ReplayInit(_cfg);
 
             if (_cfg.Mode == ReplayMode.Tick)
             {
@@ -73,11 +95,11 @@ namespace ZerodhaOxySocket
                 foreach (var tick in ticksData)
                 {
 
-                 
+
 
                     // Process tick through the same pipeline used by live feed.
                     // Important: ProcessReplayTick must treat the tick.TickTime as the "current time"
-                    TickHub.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
+                    TickHub.Instance.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
 
                     lastTickTime = tick.TickTime;
                     OnReplayTimeAdvance?.Invoke(lastTickTime.Value);
@@ -95,9 +117,9 @@ namespace ZerodhaOxySocket
                 DateTime? lastTime = null;
                 foreach (var candle in candles)
                 {
-               
+
                     // Call the TickHub's replay-candle handler
-                    TickHub.ProcessReplayCandle((uint)token, candle, cfg.ReplayId);
+                    TickHub.Instance.ProcessReplayCandle((uint)token, candle, cfg.ReplayId);
 
                     lastTime = candle.Time;
                     OnReplayTimeAdvance?.Invoke(candle.Time);

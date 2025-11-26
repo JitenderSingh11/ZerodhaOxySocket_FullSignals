@@ -16,7 +16,7 @@ namespace ZerodhaOxySocket.Helpers
             var csvPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv");
             var instrumentList = InstrumentHelper.LoadInstrumentsFromCsv(csvPath);
 
-            foreach (var auto in _config.AutoSubscribe)
+            foreach (var auto in _config.SubscribedInstruments)
             {
                 string expirySymbol = auto.Symbol; // "NIFTY", "BANKNIFTY"
                 string spotSymbol = auto.Symbol == "NIFTY" ? "NIFTY 50" : auto.Symbol; ;
@@ -31,7 +31,7 @@ namespace ZerodhaOxySocket.Helpers
                                                .Take(2)
                                                .ToList();
 
-                for (int i = -10; i <= 10; i++)
+                for (int i = -auto.Range; i <= auto.Range; i++)
                 {
                     int strike = atmStrike + i * step;
                     foreach (var type in new[] { "CE", "PE" })

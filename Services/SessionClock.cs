@@ -13,16 +13,18 @@ namespace ZerodhaOxySocket
 
         public static DateTime NowIst()
         {
-            // keep your existing impl if you already have it
-            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow,
-                TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
+            // return IST wall-clock time
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, IST);
         }
 
-        public static bool IsRegularSessionAt(DateTime ist)
+        // Accept a DateTime in any Kind; normalizes to IST before checking session window
+        public static bool IsRegularSessionAt(DateTime dt)
         {
-            // 09:15–15:30 IST inclusive (adjust if you have pre/post rules)
+            // normalize incoming time to UTC first, treating Unspecified as IST
+            DateTime utc = ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(dt);
+            DateTime ist = TimeZoneInfo.ConvertTimeFromUtc(utc, IST);
             var t = ist.TimeOfDay;
-            return t >= new TimeSpan(9, 15, 0) && t <= new TimeSpan(15, 30, 0);
+            return t >= Start && t <= End;
         }
 
 

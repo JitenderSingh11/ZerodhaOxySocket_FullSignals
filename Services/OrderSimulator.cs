@@ -37,9 +37,9 @@ namespace ZerodhaOxySocket
     {
         public static TimeSpan MaxFillWait = TimeSpan.FromMinutes(5);
 
-        public static SimTrade PlaceOrderNextTick(Guid replayId, SimOrder order)
+        public static SimTrade PlaceOrderNextTick(TickData sourceTickData,Guid replayId, SimOrder order)
         {
-            var tick = DataAccess.GetFirstTickAfter(order.InstrumentToken, order.PlacedAt);
+            var tick = sourceTickData ?? DataAccess.GetFirstTickAfter(order.InstrumentToken, order.PlacedAt);
             Candle candle = null;
 
             if (replayId != Guid.Empty && tick == null)

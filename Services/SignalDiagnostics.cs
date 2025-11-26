@@ -93,7 +93,8 @@ namespace ZerodhaOxySocket
 
         private static void EnsureLogFile()
         {
-            var today = DateTime.Now.Date;
+            // Use IST date for rotation
+            var today = ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow).Date;
             if (_currentLogFile == null || _currentLogDate != today)
             {
                 _currentLogDate = today;
@@ -102,7 +103,7 @@ namespace ZerodhaOxySocket
                 // ensure file exists
                 if (!File.Exists(_currentLogFile))
                 {
-                    try { File.WriteAllText(_currentLogFile, $"# SignalDiagnostics log start {DateTime.Now:O}\n"); }
+                    try { File.WriteAllText(_currentLogFile, $"# SignalDiagnostics log start {ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow):O}\n"); }
                     catch { /* ignore */ }
                 }
             }
@@ -131,8 +132,15 @@ namespace ZerodhaOxySocket
             };
 
             var thread = Thread.CurrentThread.ManagedThreadId;
-            var ts = DateTime.Now.ToString("HH:mm:ss.fff");
-            var line = $"[{ts}] [{tag}] [T{thread:D2}] {instrument,-18} tok:{token,-8} | {time:O} | {message}";
+            // use IST for printed timestamp
+            var nowIst = ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow);
+            var ts = nowIst.ToString("HH:mm:ss.fff");
+
+            // Convert provided time to IST for display
+            var timeUtc = ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(time);
+            var timeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(timeUtc);
+
+            var line = $"[{ts}] [{tag}] [T{thread:D2}] {instrument,-18} tok:{token,-8} | {timeIst:O} | {message}";
 
             if (AlsoConsoleWrite)
             {

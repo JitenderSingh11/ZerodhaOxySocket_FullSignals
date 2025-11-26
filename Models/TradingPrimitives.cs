@@ -58,5 +58,7 @@ namespace ZerodhaOxySocket
         public string ExitReason { get; set; } = "";
         public OrderStatus Status { get; set; } = OrderStatus.Placed;
         public double? Pnl { get; set; }
+
+        public SignalResult SignalInfo { get; set; }
     }
 }
