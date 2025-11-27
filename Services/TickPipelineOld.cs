@@ -112,7 +112,7 @@ namespace ZerodhaOxySocket
                     FullMode = BoundedChannelFullMode.DropOldest
                 };
                 var newCh = Channel.CreateBounded<TickData>(options);
-                _ = Task.Run(() => InstrumentConsumerLoop(tok, newCh.Reader, ct), ct);
+                _ = Task.Run(() => TickPipelineOld.InstrumentConsumerLoop(tok, newCh.Reader, ct), ct);
                 return newCh;
             });
 
@@ -129,7 +129,6 @@ namespace ZerodhaOxySocket
             var batch = new List<TickData>(DbBatchSize);
             DateTime lastFlush = DateTime.UtcNow;
             var name = ResolveNameSafe(token);
-
             try
             {
                 while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
@@ -140,7 +139,7 @@ namespace ZerodhaOxySocket
                         if (delay > MaxAllowedTickDelay)
                         {
                             Interlocked.Increment(ref _totalDropped);
-                            SignalDiagnostics.Warn(token, name, tick.TickTime, $"Dropping stale tick delayMs={delay.TotalMilliseconds:F0}");
+                            await SignalDiagnostics.WarnAsync(token, name, tick.TickTime, $"Dropping stale tick delayMs={delay.TotalMilliseconds:F0}");
                             continue;
                         }
 
@@ -159,23 +158,23 @@ namespace ZerodhaOxySocket
                                 lastFlush = DateTime.UtcNow;
 
                                 // Fire-and-forget DB write
-                                _ = Task.Run(() =>
+                                _ = Task.Run(async () =>
                                 {
                                     try
                                     {
-                                        DataAccess.InsertTicksBatch(flush); // adapt signature if needed
-                                        SignalDiagnostics.Info(token, name, DateTime.Now, "DB", $"Inserted {flush.Length} ticks (batch)");
+                                        await DataAccess.InsertTicksBatchAsync(flush);
+                                        await SignalDiagnostics.InfoAsync(token, name, DateTime.Now, "DB", $"Inserted {flush.Length} ticks (batch)");
                                     }
                                     catch (Exception ex)
                                     {
-                                        SignalDiagnostics.Reject(token, name, DateTime.Now, $"DB insert failed: {ex.Message}");
+                                        await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"DB insert failed: {ex.Message}");
                                     }
                                 }, ct);
                             }
                         }
                         catch (Exception eProc)
                         {
-                            SignalDiagnostics.Reject(token, name, DateTime.Now, $"Tick processing error: {eProc.Message}");
+                            await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"Tick processing error: {eProc.Message}");
                         }
                     }
                 }
@@ -183,7 +182,7 @@ namespace ZerodhaOxySocket
             catch (OperationCanceledException) { /* graceful */ }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(token, name, DateTime.Now, $"Instrument consumer failed: {ex.Message}");
+                await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"Instrument consumer failed: {ex.Message}");
             }
             finally
             {
@@ -191,12 +190,12 @@ namespace ZerodhaOxySocket
                 {
                     try
                     {
-                        DataAccess.InsertTicksBatch(batch);
-                        SignalDiagnostics.Info(token, name, DateTime.Now, "DB", $"Inserted {batch.Count} ticks (final)");
+                        await DataAccess.InsertTicksBatchAsync(batch);
+                        await SignalDiagnostics.InfoAsync(token, name, DateTime.Now, "DB", $"Inserted {batch.Count} ticks (final)");
                     }
                     catch (Exception ex)
                     {
-                        SignalDiagnostics.Reject(token, name, DateTime.Now, $"DB final insert failed: {ex.Message}");
+                        await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"DB final insert failed: {ex.Message}");
                     }
                 }
             }

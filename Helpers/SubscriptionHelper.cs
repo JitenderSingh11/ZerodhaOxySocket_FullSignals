@@ -19,7 +19,7 @@ namespace ZerodhaOxySocket.Helpers
             foreach (var auto in _config.SubscribedInstruments)
             {
                 string expirySymbol = auto.Symbol; // "NIFTY", "BANKNIFTY"
-                string spotSymbol = auto.Symbol == "NIFTY" ? "NIFTY 50" : auto.Symbol; ;
+                string spotSymbol = auto.SpotSymbol; ;
                 double spot = MarketDataHelper.GetSpotPrice(_config.ApiKey, _config.AccessToken, spotSymbol, "NSE");
                 if (spot <= 0) continue;
                 if (auto.Symbol.Contains("BANK")) step = 100;

@@ -40,6 +40,8 @@ namespace ZerodhaOxySocket
         private BulkCollector _bulkCollector;
         private OptionSelectorService _optionSelector;
 
+        private List<BulkCollector> _bulkCollectors = new();
+
         // UI timer for showing pipeline counters (cheap: 1s interval)
         private DispatcherTimer _statusTimer;
 
@@ -230,7 +232,10 @@ namespace ZerodhaOxySocket
                     _tickWriter.StopAsync().GetAwaiter().GetResult();
                 }
 
-                try { _bulkCollector?.Dispose(); } catch { }
+                foreach (var collector in _bulkCollectors)
+                {
+                    try { collector.Dispose(); } catch { }
+                }
                 try { (_signalEngine as IDisposable)?.Dispose(); } catch { }
 
                 AppendLog("Shutdown complete.");
@@ -270,7 +275,6 @@ namespace ZerodhaOxySocket
             _tickWriter = new TickWriter(capacity: capacity, partitions: partitions, maxConcurrentBulkWrites: maxConcurrent, dbBatchSize: dbBatch, dbFlushIntervalSeconds: dbFlush, maxAllowedTickDelaySeconds: maxDelay);
             _candleAgg = new CandleAggregator();
             _signalEngine = new SignalEngine(apiKey, accessToken, _candleAgg);
-            _bulkCollector = new BulkCollector(apiKey, accessToken, _tickWriter);
             _optionSelector = new OptionSelectorService();
 
             // Subscribe to underlying indices (e.g., NIFTY and BANKNIFTY)
@@ -299,16 +303,17 @@ namespace ZerodhaOxySocket
                     double target = entry * 1.05; // example target +5%
                     double stop = entry * 0.98; // example stop -2%
                     var monitor = new TradeMonitor(optToken, entry, target, stop);
-                    _bulkCollector.TickReceived += monitor.OnTick;
+                    foreach (var collector in _bulkCollectors)
+                        collector.TickReceived += monitor.OnTick;
                     monitor.OnTradeClosed += tm =>
                     {
                         AppendLog($"Trade closed for token {tm.InstrumentToken}.");
-                        _bulkCollector.TickReceived -= monitor.OnTick;
+                        foreach (var collector in _bulkCollectors)
+                            collector.TickReceived -= monitor.OnTick;
                     };
                 }
             };
 
-            // Subscribe to candle completion to update UI/plots
             _candleAgg.CandleCompleted += (s, e) =>
             {
                 Dispatcher.Invoke(() => {
@@ -317,12 +322,16 @@ namespace ZerodhaOxySocket
                 });
             };
 
-            // Connect collectors (if not done in constructor)
-            // Assuming BulkCollector and SignalEngine already connected in constructors
-            // So just subscribe to option tokens as needed:
-            // e.g. subscribe to first set of option tokens for initial interest
-            var optionTokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config); // placeholder for your list
-            _bulkCollector.Subscribe(optionTokens);
+            // Partition tokens for multi-socket subscription
+            var optionTokens = SubscriptionHelper.GetTokensForAutoSubscribe(_config).ToList();
+            const int maxTokensPerSocket =70;
+            for (int i =0; i < optionTokens.Count; i += maxTokensPerSocket)
+            {
+                var batch = optionTokens.Skip(i).Take(maxTokensPerSocket).ToList();
+                var collector = new BulkCollector(apiKey, accessToken, _tickWriter);
+                collector.Subscribe(batch);
+                _bulkCollectors.Add(collector);
+            }
         }
 
         private void AppendLog(string line)
@@ -332,6 +341,30 @@ namespace ZerodhaOxySocket
         }
 
         private string GetConfigPath() => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+        private string GetUserTokenPath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZerodhaOxySocket", "user_secrets.json");
+
+private (string token, DateTime date) LoadAccessTokenFromUserFile()
+{
+ var path = GetUserTokenPath();
+ if (!File.Exists(path)) return ("", DateTime.MinValue);
+ try
+ {
+ var json = File.ReadAllText(path);
+ var obj = JsonConvert.DeserializeObject<dynamic>(json);
+ string token = obj?.AccessToken ?? "";
+ string dateStr = obj?.Date ?? "";
+ DateTime date = DateTime.TryParse(dateStr, out var d) ? d : DateTime.MinValue;
+ return (token, date);
+ }
+ catch { return ("", DateTime.MinValue); }
+}
+
+private void SaveAccessTokenToUserFile(string token)
+{
+ var path = GetUserTokenPath();
+ var obj = new { AccessToken = token, Date = DateTime.Today.ToString("yyyy-MM-dd") };
+ File.WriteAllText(path, JsonConvert.SerializeObject(obj, Formatting.Indented));
+}
 
         private void LoadConfig()
         {
@@ -342,11 +375,25 @@ namespace ZerodhaOxySocket
                 MessageBox.Show("Default config.json created. Please fill ApiKey/ApiSecret.", "Config");
             }
             _config = JsonConvert.DeserializeObject<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
+
+            // Load persisted access token if present and valid for today
+            var (token, date) = LoadAccessTokenFromUserFile();
+            if (!string.IsNullOrWhiteSpace(token) && date == DateTime.Today)
+            {
+                _config.AccessToken = token;
+            }
+            else
+            {
+                _config.AccessToken = "";
+            }
         }
 
         private void SaveConfig()
         {
             File.WriteAllText(GetConfigPath(), JsonConvert.SerializeObject(_config, Formatting.Indented));
+            // Also persist access token to user file if present
+            if (!string.IsNullOrWhiteSpace(_config.AccessToken))
+                SaveAccessTokenToUserFile(_config.AccessToken);
         }
 
         private void UpdateMenuState()
@@ -354,7 +401,7 @@ namespace ZerodhaOxySocket
             bool hasToken = !string.IsNullOrWhiteSpace(_config?.AccessToken);
             miConnect.IsEnabled = hasToken;
             miSubscribeTabs.IsEnabled = hasToken;
-            txtStatus.Text = hasToken ? "Ready to connect." : "⚠️ No access token. Use File → Refresh Access Token first.";
+            txtStatus.Text = hasToken ? "Ready to connect." : "⚠️ No access token for today. Use File → Refresh Access Token first.";
         }
 
         private void Connect_Click(object sender, RoutedEventArgs e)
@@ -484,7 +531,7 @@ namespace ZerodhaOxySocket
 
                     var user = kite.GenerateSession(req, _config.ApiSecret);
                     _config.AccessToken = user.AccessToken;
-                    SaveConfig();
+                    SaveConfig(); // will also persist to user file
                     UpdateMenuState();
 
                     MessageBox.Show("Access token refreshed.");

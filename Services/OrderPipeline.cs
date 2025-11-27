@@ -12,6 +12,7 @@ namespace ZerodhaOxySocket
     public static class OrderPipeline
     {
         private static readonly int Partitions = Math.Max(1, Environment.ProcessorCount / 2);
+        private static readonly int ConsumersPerPartition = 2; // Tune as needed
         private static readonly Channel<TickData>[] _channels;
         private static readonly Task[] _consumerTasks;
 
@@ -26,18 +27,21 @@ namespace ZerodhaOxySocket
         static OrderPipeline()
         {
             _channels = new Channel<TickData>[Partitions];
-            _consumerTasks = new Task[Partitions];
+            _consumerTasks = new Task[Partitions * ConsumersPerPartition];
 
             for (int i = 0; i < Partitions; i++)
             {
                 var opts = new BoundedChannelOptions(10000)
                 {
-                    SingleReader = true,
+                    SingleReader = false,
                     SingleWriter = false,
                     FullMode = BoundedChannelFullMode.DropWrite
                 };
                 _channels[i] = Channel.CreateBounded<TickData>(opts);
-                _consumerTasks[i] = StartConsumer(_channels[i].Reader);
+                for (int j = 0; j < ConsumersPerPartition; j++)
+                {
+                    _consumerTasks[i * ConsumersPerPartition + j] = StartConsumer(_channels[i].Reader);
+                }
             }
         }
 
@@ -58,20 +62,36 @@ namespace ZerodhaOxySocket
             return ok;
         }
 
-        private static Task StartConsumer(ChannelReader<TickData> reader)
+        public static async Task<bool> EnqueueOrderAsync(TickData t)
         {
-            return Task.Run(async () =>
+            if (t == null) return false;
+            var idx = (int)(t.InstrumentToken % (uint)Partitions);
+            bool ok = await _channels[idx].Writer.WaitToWriteAsync();
+            if (ok)
+            {
+                await _channels[idx].Writer.WriteAsync(t);
+                Interlocked.Increment(ref _totalEnqueued);
+            }
+            else
+            {
+                Interlocked.Increment(ref _totalDropped);
+            }
+            return ok;
+        }
+
+        private static async Task StartConsumer(ChannelReader<TickData> reader)
+        {
+            await Task.Run(async () =>
             {
                 await foreach (var tick in reader.ReadAllAsync())
                 {
                     try
                     {
-                        // Process signal/order in dedicated pipeline
-                        TickHub.Instance.ProcessSignalOrder(tick, Guid.Empty);
+                        await TickHub.Instance.ProcessSignalOrderAsync(tick, Guid.Empty);
                     }
                     catch (Exception ex)
                     {
-                        SignalDiagnostics.Reject(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline consumer error: " + ex.Message);
+                        await SignalDiagnostics.RejectAsync(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline consumer error: " + ex.Message);
                     }
                 }
             });

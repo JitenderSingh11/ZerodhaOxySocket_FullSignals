@@ -4,6 +4,8 @@
   "AccessToken": "",
   "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;Connection Timeout=300",
 
+  "EnableChartUpdates": false,
+
   "DefaultTimeframeMinutes": 5,
   "PaperTrade": true,
   "EnableSimulator": false,
@@ -12,6 +14,7 @@
       "Token": 256265,
       "Name": "NIFTY",
       "Symbol": "NIFTY",
+      "SpotSymbol": "NIFTY 50",
       "Range": 10,
       "TimeframeMinutes": 5
     },
@@ -19,6 +22,7 @@
       "Token": 260105,
       "Name": "BANKNIFTY",
       "Symbol": "BANKNIFTY",
+      "SpotSymbol": "NIFTY BANK",
       "Range": 10,
       "TimeframeMinutes": 5
     }

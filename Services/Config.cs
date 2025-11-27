@@ -120,6 +120,8 @@ namespace ZerodhaOxySocket
 
         // TickWriter settings
         public TickWriterConfig TickWriter { get; set; } = new();
+
+        public bool EnableChartUpdates { get; set; } = false;
     }
     
     public class SubscribedInstrument
@@ -129,7 +131,10 @@ namespace ZerodhaOxySocket
         public int TimeframeMinutes { get; set; } = 1;
 
         public string Symbol { get; set; }
-         
+
+
+        public string SpotSymbol { get; set; }
+
         public int Range { get; set; } = 10;
     }
 }

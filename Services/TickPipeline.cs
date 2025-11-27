@@ -8,6 +8,7 @@ namespace ZerodhaOxySocket
     public static class TickPipeline
     {
         private static readonly int Partitions = Math.Max(1, Environment.ProcessorCount / 2);
+        private static readonly int ConsumersPerPartition = 2; // Tune as needed
         private static readonly Channel<TickData>[] _channels;
         private static readonly Task[] _consumerTasks;
 
@@ -22,18 +23,21 @@ namespace ZerodhaOxySocket
         static TickPipeline()
         {
             _channels = new Channel<TickData>[Partitions];
-            _consumerTasks = new Task[Partitions];
+            _consumerTasks = new Task[Partitions * ConsumersPerPartition];
 
             for (int i = 0; i < Partitions; i++)
             {
-                var opts = new BoundedChannelOptions(100000)
+                var opts = new BoundedChannelOptions(500000)
                 {
-                    SingleReader = true,
+                    SingleReader = false, // Allow multiple readers
                     SingleWriter = false,
-                    FullMode = BoundedChannelFullMode.DropWrite // or DropOldest
+                    FullMode = BoundedChannelFullMode.DropWrite
                 };
                 _channels[i] = Channel.CreateBounded<TickData>(opts);
-                _consumerTasks[i] = StartConsumer(_channels[i].Reader);
+                for (int j = 0; j < ConsumersPerPartition; j++)
+                {
+                    _consumerTasks[i * ConsumersPerPartition + j] = StartConsumer(_channels[i].Reader);
+                }
             }
         }
 
@@ -60,37 +64,43 @@ namespace ZerodhaOxySocket
             return ok;
         }
 
-        private static Task StartConsumer(ChannelReader<TickData> reader)
+        private static async Task StartConsumer(ChannelReader<TickData> reader)
         {
-            return Task.Run(async () =>
+            await Task.Run(async () =>
             {
                 await foreach (var tick in reader.ReadAllAsync())
                 {
                     try
                     {
-                        // 1) update in-memory candles / indicators
-                        TickHub.Instance.ProcessTickFromPipeline(tick);
-
-                        // 2) if there are open orders for this instrument, enqueue to the dedicated order pipeline
+                        await TickHub.Instance.ProcessTickFromPipelineAsync(tick);
                         try
                         {
                             if (OrderManager.Instance.HasOpenPositionForInstrument(tick.InstrumentToken))
                             {
-                                if (!OrderPipeline.EnqueueOrder(tick))
+                                if (OrderPipeline.EnqueueOrderAsync != null)
                                 {
-                                    SignalDiagnostics.Warn(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline enqueue failed - dropped");
+                                    if (!await OrderPipeline.EnqueueOrderAsync(tick))
+                                    {
+                                        await SignalDiagnostics.WarnAsync(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline enqueue failed - dropped");
+                                    }
+                                }
+                                else
+                                {
+                                    if (!OrderPipeline.EnqueueOrder(tick))
+                                    {
+                                        await SignalDiagnostics.WarnAsync(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "OrderPipeline enqueue failed - dropped");
+                                    }
                                 }
                             }
                         }
                         catch (Exception exOrder)
                         {
-                            // Safely log and continue
-                            SignalDiagnostics.Reject(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "Order routing failed: " + exOrder.Message);
+                            await SignalDiagnostics.RejectAsync(tick.InstrumentToken, InstrumentCatalog.ResolveName(tick.InstrumentToken) ?? "", DateTime.UtcNow, "Order routing failed: " + exOrder.Message);
                         }
                     }
                     catch (Exception ex)
                     {
-                        SignalDiagnostics.Reject(tick.InstrumentToken, "", DateTime.UtcNow, "Pipeline consumer error: " + ex.Message);
+                        await SignalDiagnostics.RejectAsync(tick.InstrumentToken, "", DateTime.UtcNow, "Pipeline consumer error: " + ex.Message);
                     }
                 }
             });

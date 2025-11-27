@@ -164,5 +164,18 @@ namespace ZerodhaOxySocket
 
         public static void Warn(uint token, string instrument, DateTime time, string message)
             => WriteRaw("WARN", token, instrument, time, message);
+
+        public static async Task InfoAsync(uint token, string name, DateTime time, string tag, string msg)
+        {
+            await Task.Run(() => Info(token, name, time, tag, msg));
+        }
+        public static async Task WarnAsync(uint token, string name, DateTime time, string msg)
+        {
+            await Task.Run(() => Warn(token, name, time, msg));
+        }
+        public static async Task RejectAsync(uint token, string name, DateTime time, string msg)
+        {
+            await Task.Run(() => Reject(token, name, time, msg));
+        }
     }
 }

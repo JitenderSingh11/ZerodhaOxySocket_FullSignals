@@ -4,6 +4,7 @@ using System.Linq;
 using Dapper;
 using System;
 using System.Data;
+using System.Threading.Tasks;
 
 namespace ZerodhaOxySocket
 {
@@ -73,6 +74,211 @@ CREATE TABLE dbo.Signals(
 );
 CREATE INDEX IX_Signals_TokenTime ON dbo.Signals(InstrumentToken, CreatedAt);
 END");
+        }
+
+        public static async Task InsertTicksBatchAsync(IEnumerable<TickData> batch)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+                using var tran = conn.BeginTransaction();
+                var sql = @"
+INSERT INTO dbo.Ticks(InstrumentToken,InstrumentName,LastPrice,LastQuantity,Volume,AveragePrice,OpenPrice,HighPrice,LowPrice,ClosePrice,OI,OIChange,BidQty1,BidPrice1,AskPrice1,AskQty1,TickTime,ReceivedAt)
+VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@AveragePrice,@OpenPrice,@HighPrice,@LowPrice,@ClosePrice,@OI,@OIChange,@BidQty1,@BidPrice1,@AskPrice1,@AskQty1,@TickTime,@ReceivedAt)";
+                var rows = batch.Select(t => new
+                {
+                    InstrumentToken = (long)t.InstrumentToken,
+                    t.InstrumentName,
+                    t.LastPrice,
+                    t.LastQuantity,
+                    t.Volume,
+                    t.AveragePrice,
+                    t.OpenPrice,
+                    t.HighPrice,
+                    t.LowPrice,
+                    t.ClosePrice,
+                    t.OI,
+                    t.OIChange,
+                    t.BidQty1,
+                    t.BidPrice1,
+                    t.AskPrice1,
+                    t.AskQty1,
+                    // Convert internal UTC to IST for DB storage
+                    TickTime = (DateTime)ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime),
+                    ReceivedAt = (DateTime)ZerodhaOxySocket.Services.Clock.UtcToIst(t.ReceivedAt ?? DateTime.UtcNow)
+                });
+                await conn.ExecuteAsync(sql, rows, transaction: tran);
+                tran.Commit();
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertTicksBatchAsync failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Bulk insert using SqlBulkCopy. Uses a DataTable and explicit column mappings.
+        /// </summary>
+        public static async Task InsertTicksBulkAsync(IEnumerable<TickData> batch)
+        {
+            try
+            {
+                var dt = new DataTable();
+                dt.Columns.Add("InstrumentToken", typeof(long));
+                dt.Columns.Add("LastPrice", typeof(decimal));
+                dt.Columns.Add("LastQuantity", typeof(long));
+                dt.Columns.Add("Volume", typeof(long));
+                dt.Columns.Add("AveragePrice", typeof(decimal));
+                dt.Columns.Add("OpenPrice", typeof(decimal));
+                dt.Columns.Add("HighPrice", typeof(decimal));
+                dt.Columns.Add("LowPrice", typeof(decimal));
+                dt.Columns.Add("ClosePrice", typeof(decimal));
+                dt.Columns.Add("OI", typeof(long));
+                dt.Columns.Add("OIChange", typeof(long));
+                dt.Columns.Add("BidQty1", typeof(long));
+                dt.Columns.Add("BidPrice1", typeof(decimal));
+                dt.Columns.Add("AskPrice1", typeof(decimal));
+                dt.Columns.Add("AskQty1", typeof(long));
+                dt.Columns.Add("TickTime", typeof(DateTime));
+                dt.Columns.Add("InstrumentName", typeof(string));
+                dt.Columns.Add("ReceivedAt", typeof(DateTime));
+
+                foreach (var t in batch)
+                {
+                    var row = dt.NewRow();
+                    row["InstrumentToken"] = (long)t.InstrumentToken;
+                    row["LastPrice"] = Convert.ToDecimal(t.LastPrice);
+                    row["LastQuantity"] = t.LastQuantity;
+                    row["Volume"] = t.Volume;
+                    row["AveragePrice"] = Convert.ToDecimal(t.AveragePrice);
+                    row["OpenPrice"] = Convert.ToDecimal(t.OpenPrice);
+                    row["HighPrice"] = Convert.ToDecimal(t.HighPrice);
+                    row["LowPrice"] = Convert.ToDecimal(t.LowPrice);
+                    row["ClosePrice"] = Convert.ToDecimal(t.ClosePrice);
+                    row["OI"] = t.OI;
+                    row["OIChange"] = t.OIChange;
+                    row["BidQty1"] = t.BidQty1;
+                    row["BidPrice1"] = Convert.ToDecimal(t.BidPrice1);
+                    row["AskPrice1"] = Convert.ToDecimal(t.AskPrice1);
+                    row["AskQty1"] = t.AskQty1;
+                    // store IST in DB
+                    row["TickTime"] = ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime);
+                    row["InstrumentName"] = t.InstrumentName ?? string.Empty;
+                    row["ReceivedAt"] = ZerodhaOxySocket.Services.Clock.UtcToIst(t.ReceivedAt ?? DateTime.UtcNow);
+                    dt.Rows.Add(row);
+                }
+
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+                using var bulk = new SqlBulkCopy(conn)
+                {
+                    DestinationTableName = "dbo.Ticks",
+                    BatchSize = Math.Max(1, dt.Rows.Count),
+                    BulkCopyTimeout = 600
+                };
+
+                // Column mappings
+                bulk.ColumnMappings.Add("InstrumentToken", "InstrumentToken");
+                bulk.ColumnMappings.Add("LastPrice", "LastPrice");
+                bulk.ColumnMappings.Add("LastQuantity", "LastQuantity");
+                bulk.ColumnMappings.Add("Volume", "Volume");
+                bulk.ColumnMappings.Add("AveragePrice", "AveragePrice");
+                bulk.ColumnMappings.Add("OpenPrice", "OpenPrice");
+                bulk.ColumnMappings.Add("HighPrice", "HighPrice");
+                bulk.ColumnMappings.Add("LowPrice", "LowPrice");
+                bulk.ColumnMappings.Add("ClosePrice", "ClosePrice");
+                bulk.ColumnMappings.Add("OI", "OI");
+                bulk.ColumnMappings.Add("OIChange", "OIChange");
+                bulk.ColumnMappings.Add("BidQty1", "BidQty1");
+                bulk.ColumnMappings.Add("BidPrice1", "BidPrice1");
+                bulk.ColumnMappings.Add("AskPrice1", "AskPrice1");
+                bulk.ColumnMappings.Add("AskQty1", "AskQty1");
+                bulk.ColumnMappings.Add("TickTime", "TickTime");
+                bulk.ColumnMappings.Add("InstrumentName", "InstrumentName");
+                bulk.ColumnMappings.Add("ReceivedAt", "ReceivedAt");
+
+                await Task.Run(() => bulk.WriteToServer(dt));
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertTicksBulkAsync failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public static async Task InsertCandleAsync(Candle c, uint token, string name, bool isPaper = true)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+
+                var interval = $"{Config.Current.Trading.TimeframeMinutes}m"; // e.g. "5m"
+
+                // Convert candle time (internal UTC) to IST for DB
+                var candleTimeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(c.Time);
+
+                await conn.ExecuteAsync(@"
+INSERT INTO dbo.Candles(InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
+VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
+                    new { token = (long)token, name, Interval = interval, time = candleTimeIst, o = c.Open, h = c.High, l = c.Low, c = c.Close, v = (long)c.Volume });
+
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertCandleAsync failed: {ex.Message}");
+            }
+        }
+
+        public static async Task InsertSignalAsync(Signal s, uint token, string name, bool isPaper = true)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+                await conn.ExecuteAsync(@"
+INSERT INTO dbo.Signals(InstrumentToken, InstrumentName, SignalType, Price, Note, CreatedAt)
+VALUES(@token, @name, @type, @price, @note, @createdAt)",
+                    new { token = (long)token, name, type = s.Type.ToString(), price = s.Price, note = s.Note ?? "", createdAt = SessionClock.NowIst() });
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(token, name, ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertSignalAsync failed: {ex.Message}");
+            }
+        }
+
+        public static async Task InsertSimTradeAsync(Guid replayId, SimTrade trade)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+                await conn.ExecuteAsync(@"
+INSERT INTO dbo.SimTrades(ReplayId, InstrumentToken, InstrumentName, UnderlyingToken, UnderlyingPrice, TradeSide, QuantityLots, EntryTime, EntryPrice, ExitTime, ExitPrice, Pnl, Reason)
+VALUES(@replay, @token, @name, @utok, @uprice, @side, @lots, @et, @ep, @xt, @xp, @pnl, @reason)",
+                    new
+                    {
+                        replay = replayId,
+                        token = (long)trade.InstrumentToken,
+                        name = trade.InstrumentName,
+                        utok = (long?)trade.UnderlyingToken,
+                        uprice = trade.UnderlyingPrice,
+                        side = trade.TradeSide,
+                        lots = trade.QuantityLots,
+                        et = trade.EntryTime,
+                        ep = trade.EntryPrice,
+                        xt = trade.ExitTime,
+                        xp = trade.ExitPrice,
+                        pnl = trade.Pnl,
+                        reason = trade.Reason ?? ""
+                    });
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertSimTradeAsync failed: {ex.Message}");
+            }
         }
 
         public static void InsertTicksBatch(IEnumerable<TickData> batch)

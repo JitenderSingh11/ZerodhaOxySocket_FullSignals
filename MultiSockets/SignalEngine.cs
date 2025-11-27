@@ -33,7 +33,6 @@ namespace ZerodhaOxySocket.MultiSockets
         public SignalEngine(string apiKey, string accessToken, CandleAggregator aggregator)
         {
             _aggregator = aggregator ?? throw new ArgumentNullException(nameof(aggregator));
-            _aggregator.CandleCompleted += Aggregator_CandleCompleted;
 
             _socket = new ZerodhaTickerSocket();
             _socket.OnTicks += HandleTicks;
@@ -106,44 +105,12 @@ namespace ZerodhaOxySocket.MultiSockets
             if (!TickPipeline.EnqueueTick(tick))
             {
                 var nm = InstrumentCatalog.ResolveName(kt.InstrumentToken);
-                SignalDiagnostics.Warn(tick.InstrumentToken, nm, DateTime.Now, "Enqueue failed - channel full");
-            }
-        }
-
-        private void Aggregator_CandleCompleted(object sender, CandleCompletedEventArgs e)
-        {
-            // Identify instrument name from token
-            string name = _tokenNames.TryGetValue(e.Token, out var n) ? n : $"Token{e.Token}";
-            double open = e.Candle.Open, close = e.Candle.Close;
-
-            // Simple example strategy: buy on green candle, sell on red
-            if (close > open)
-            {
-                OnSignal?.Invoke(this, new SignalEventArgs
-                {
-                    InstrumentName = name,
-                    Signal = new Signal { Type = SignalType.Buy, Price = close }
-                });
-            }
-            else if (close < open)
-            {
-                OnSignal?.Invoke(this, new SignalEventArgs
-                {
-                    InstrumentName = name,
-                    Signal = new Signal { Type = SignalType.Sell, Price = close }
-                });
+                SignalDiagnostics.WarnAsync(tick.InstrumentToken, nm, DateTime.Now, "Enqueue failed - channel full");
             }
         }
 
         public void Dispose()
         {
-            try
-            {
-                if (_aggregator != null)
-                    _aggregator.CandleCompleted -= Aggregator_CandleCompleted;
-            }
-            catch { }
-
             try
             {
                 if (_socket != null)

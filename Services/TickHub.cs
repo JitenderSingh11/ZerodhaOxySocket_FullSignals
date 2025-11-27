@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Controls;
 
 namespace ZerodhaOxySocket
@@ -23,10 +24,10 @@ namespace ZerodhaOxySocket
         public Signal Signal { get; set; }
     }
 
-     public class OrderCreatedEventArgs : EventArgs
-     {
+    public class OrderCreatedEventArgs : EventArgs
+    {
         public OrderRecord Order { get; set; }
-     }
+    }
 
     public class TickHub
     {
@@ -47,6 +48,8 @@ namespace ZerodhaOxySocket
         private readonly ConcurrentDictionary<uint, DateTime> _lastDiagLog = new();
         private readonly TimeSpan _perTickLogInterval = TimeSpan.FromSeconds(1);
 
+        private bool _enableChartUpdates = false;
+
         public event Action<uint, double, double> OnLtp;
         public event Action<string> OnStatus;
         public event EventHandler<CandleEventArgs> OnCandleClosed;
@@ -65,7 +68,10 @@ namespace ZerodhaOxySocket
 
         public void Init(AppConfig _config, string apiKey, string accessToken, string connectionString)
         {
-            _apiKey = apiKey; _accessToken = accessToken; _cs = connectionString;
+            _apiKey = apiKey;
+            _accessToken = accessToken;
+            _cs = connectionString;
+            _enableChartUpdates = _config.EnableChartUpdates;
 
             DataAccess.InitDb(connectionString);
 
@@ -216,7 +222,8 @@ namespace ZerodhaOxySocket
             }
             catch { }
 
-            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+            if (_enableChartUpdates)
+                OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
 
             var name = ResolveName(tokenU);
             var ctx = _contexts.GetOrAdd(tokenU, _ =>
@@ -238,12 +245,13 @@ namespace ZerodhaOxySocket
             {
                 if (_underlyingToken.Any(ut => ut == tokenU))
                 {
-                    OnCandleClosed?.Invoke(this, new CandleEventArgs
-                    {
-                        InstrumentToken = (long)tokenU,
-                        InstrumentName = ctx.Name,
-                        Candle = closed
-                    });
+                    if (_enableChartUpdates)
+                        OnCandleClosed?.Invoke(this, new CandleEventArgs
+                        {
+                            InstrumentToken = (long)tokenU,
+                            InstrumentName = ctx.Name,
+                            Candle = closed
+                        });
 
                     if (IsLive)
                     {
@@ -294,7 +302,7 @@ namespace ZerodhaOxySocket
 
         public void ProcessSignalOrder(TickData tick, Guid replayId)
         {
-            if(!_orderManager.HasOpenPositionForInstrument(tick.InstrumentToken))
+            if (!_orderManager.HasOpenPositionForInstrument(tick.InstrumentToken))
             {
                 return;
             }
@@ -313,12 +321,37 @@ namespace ZerodhaOxySocket
                 PlacedAt = order.SignalInfo.Time,
                 Reason = "ConservativeA"
             };
-            
+
             var sim = OrderSimulator.PlaceOrderNextTick(tick, replayId, simOrder);
-            
             _orderManager.AttachFill(order, sim);
-                            if (order.Status == OrderStatus.Open) _exitManager.Track(order);
+            if (order.Status == OrderStatus.Open) _exitManager.Track(order);
+        }
+
+        public async Task ProcessSignalOrderAsync(TickData tick, Guid replayId)
+        {
+            if (!_orderManager.HasOpenPositionForInstrument(tick.InstrumentToken))
+            {
+                await SignalDiagnostics.RejectAsync(tick.InstrumentToken, ResolveName(tick.InstrumentToken), ZerodhaOxySocket.Services.Clock.UtcToIst(tick.TickTime), "No open position for instrument in ProcessSignalOrderAsync");
+                return;
             }
+            var order = _orderManager.GetOpenOrdersForInstrument(tick.InstrumentToken).FirstOrDefault();
+            var simOrder = new SimOrder
+            {
+                ReplayId = replayId,
+                InstrumentToken = (uint)order.InstrumentToken,
+                InstrumentName = order.InstrumentName,
+                UnderlyingToken = order.UnderlyingToken,
+                UnderlyingPrice = order.SignalInfo.Price,
+                Side = order.Side,
+                QuantityLots = order.QuantityLots,
+                PlacedAt = order.SignalInfo.Time,
+                Reason = "ConservativeA"
+            };
+            var sim = await OrderSimulator.PlaceOrderNextTickAsync(tick, replayId, simOrder);
+            await Task.Run(() => _orderManager.AttachFill(order, sim));
+            if (order.Status == OrderStatus.Open) await Task.Run(() => _exitManager.Track(order));
+            return;
+        }
 
         public void ProcessTickFromPipeline(TickData t)
         {
@@ -337,7 +370,8 @@ namespace ZerodhaOxySocket
             }
             catch { }
 
-            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+            if (_enableChartUpdates)
+                OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
 
             var name = ResolveName(tokenU);
             var ctx = _contexts.GetOrAdd(tokenU, _ =>
@@ -352,119 +386,95 @@ namespace ZerodhaOxySocket
                 _exitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
         }
 
-        private bool ShouldRecord(
-            uint token, double price, long vol, long lastQty,
-            DateTime tickUtc, bool allowAfterHours = false)
+        public async Task ProcessTickFromPipelineAsync(TickData t)
         {
-            // normalize tick time and convert to IST for session checks and logging
-            if (!allowAfterHours && !SessionClock.IsRegularSessionAt(tickUtc))
+            if (t == null)
             {
-                SignalDiagnostics.Reject(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), $"SessionClock denied recording (afterHours). tickIst={ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc):O}");
-                return false;
+                await SignalDiagnostics.RejectAsync(0, "TickHub", DateTime.UtcNow, "Null tick in ProcessTickFromPipelineAsync");
+                return;
             }
-
-            var last = _lastSeen.GetOrAdd(token, _ => (double.NaN, -1));
-            bool unchanged = last.price == price && last.vol == vol;
-
-            if (unchanged && lastQty <= 0)
+            var tokenU = t.InstrumentToken;
+            if (!ShouldRecord(tokenU, t.LastPrice, t.Volume, t.LastQuantity, t.TickTime))
             {
-                SignalDiagnostics.Reject(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), $"Stale/no-trade tick: unchanged price/vol and lastQty={lastQty}");
-                return false;
+                await SignalDiagnostics.RejectAsync(tokenU, ResolveName(tokenU), ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime), "ShouldRecord returned false in ProcessTickFromPipelineAsync");
+                return;
             }
-
-            _lastSeen[token] = (price, vol);
-
-            if (ShouldLogPerTick(token))
-                SignalDiagnostics.Info(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), "SHOULDREC", $"Allowed (price={price}, vol={vol}, lastQty={lastQty})");
-            return true;
-        }
-
-        private void LoadInstrumentNames()
-        {
             try
             {
-                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
-                foreach (var it in list)
-                {
-                    var name = string.IsNullOrWhiteSpace(it.Tradingsymbol)
-                        ? (it.Name ?? it.InstrumentToken.ToString())
-                        : it.Tradingsymbol;
-                    _instrumentNameCache[(uint)it.InstrumentToken] = name;
-                }
+                if (ShouldLogPerTick(tokenU))
+                    await SignalDiagnostics.InfoAsync(t.InstrumentToken, ResolveName(tokenU), ZerodhaOxySocket.Services.Clock.UtcToIst(t.TickTime), "ENQ",
+                        $"Pipeline tick LP={t.LastPrice} Vol={t.Volume}");
             }
             catch { }
+            OnLtp?.Invoke(tokenU, t.LastPrice, t.Volume);
+            var name = ResolveName(tokenU);
+            var ctx = _contexts.GetOrAdd(tokenU, _ =>
+                new InstrumentContext(tokenU, name, TimeSpan.FromMinutes(Config.Current.Trading.TimeframeMinutes)));
+            long qtyToUse = (t.LastQuantity > 0) ? t.LastQuantity : (t.Volume > 0 ? t.Volume : 0);
+            var closed = ctx.ProcessTickWithTime(t.LastPrice, t.TickTime, qtyToUse);
+            await CandleEvaluationAsync(ctx, closed, tokenU, IsLive: true, replayId: Guid.Empty);
+            if (_underlyingToken.Any(ut => ut != tokenU))
+                _exitManager.OnOptionTick(tokenU, t.LastPrice, t.TickTime);
         }
 
-        private bool ShouldLogPerTick(uint token)
+        private async Task CandleEvaluationAsync(InstrumentContext? ctx, Candle? closed, uint tokenU, bool IsLive, Guid replayId)
         {
-            var now = SessionClock.NowIst();
-            var last = _lastDiagLog.GetOrAdd(token, DateTime.MinValue);
-            if (now - last < _perTickLogInterval) return false;
-            _lastDiagLog[token] = now;
-            return true;
-        }
-
-        private string ResolveName(uint token)
-        {
-            if (_instrumentNameCache.TryGetValue(token, out var name)) return name;
-            try
+            if (closed != null)
             {
-                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
-                var it = list.FirstOrDefault(x => x.InstrumentToken == token);
-                if (it != null)
+                if (_underlyingToken.Any(ut => ut == tokenU))
                 {
-                    var nm = string.IsNullOrWhiteSpace(it.Tradingsymbol) ? (it.Name ?? token.ToString()) : it.Tradingsymbol;
-                    _instrumentNameCache[token] = nm;
-                    return nm;
+                    if (_enableChartUpdates)
+                        OnCandleClosed?.Invoke(this, new CandleEventArgs
+                        {
+                            InstrumentToken = (long)tokenU,
+                            InstrumentName = ctx.Name,
+                            Candle = closed
+                        });
+                    if (IsLive)
+                    {
+                        await SignalDiagnostics.InfoAsync(tokenU, ctx.Name, ZerodhaOxySocket.Services.Clock.UtcToIst(closed.Time), "CANDLE", $"Closed candle at {ZerodhaOxySocket.Services.Clock.UtcToIst(closed.Time):O} O={closed.Open} H={closed.High} L={closed.Low} C={closed.Close} V={closed.Volume}");
+                        await DataAccess.InsertCandleAsync(closed, tokenU, ctx.Name, true);
+                    }
+                    UnderlyingCandleCache.Put((long)tokenU, closed);
+                    var sig = ctx.EvaluateSignalsPositionAware_Conservative();
+                    if (sig != null)
+                    {
+                        if (!SignalGate.ShouldEmitSignal(tokenU, sig.Type, sig.Time, Config.Current.Trading.DebounceCandles))
+                        {
+                            await SignalDiagnostics.InfoAsync(tokenU, ctx.Name, ZerodhaOxySocket.Services.Clock.UtcToIst(sig.Time), "SIGNALGATE", "SignalGate blocked signal emission");
+                            return;
+                        }
+                        if (!Config.Current.Trading.AllowMultipleOpenPositions &&
+                            _orderManager.HasOpenPositionForUnderlying(tokenU))
+                        {
+                            await SignalDiagnostics.InfoAsync(tokenU, ctx.Name, ZerodhaOxySocket.Services.Clock.UtcToIst(sig.Time), "ORDERGATE", "Multiple open positions not allowed");
+                            return;
+                        }
+                        var optType = (sig.Type == SignalType.Buy) ? "CE" : "PE";
+                        var expiry = OptionMapper.GetNearestExpiry(ctx.Name);
+                        var mapped = OptionMapper.ChooseATMOption(ctx.Name, sig.Price, expiry.Value, optType);
+                        if (mapped != null)
+                        {
+                            var order = new OrderRecord
+                            {
+                                OrderId = Guid.NewGuid(),
+                                SignalId = Guid.NewGuid(),
+                                ReplayId = replayId,
+                                InstrumentToken = mapped.InstrumentToken,
+                                InstrumentName = mapped.Tradingsymbol,
+                                UnderlyingToken = tokenU,
+                                UnderlyingPriceAtSignal = sig.Price,
+                                Side = "BUY",
+                                QuantityLots = 1,
+                                Status = OrderStatus.Placed,
+                                SignalInfo = sig
+                            };
+                            _orderManager.CreateOrder(order);
+                            OnOrderCreated?.Invoke(this, new OrderCreatedEventArgs { Order = order });
+                        }
+                    }
                 }
             }
-            catch { }
-            return token.ToString();
-        }
-
-        public void SubscribeAuto(IEnumerable<uint> tokens)
-        {
-            foreach (var t in tokens)
-            {
-                var name = ResolveName(t);
-                _contexts.GetOrAdd(t, _ => new InstrumentContext(t, name, TimeSpan.FromMinutes(1)));
-                _autoTokens.Add(t);
-            }
-            _socket?.Subscribe(tokens, "full");
-        }
-
-        private string MakeGroupName(string tradingsymbol)
-        {
-            try
-            {
-                tradingsymbol ??= "";
-                string s = tradingsymbol.ToUpperInvariant();
-                if (s.EndsWith("CE") || s.EndsWith("PE")) s = s[..^2];
-                int i = 0; while (i < s.Length && !char.IsDigit(s[i])) i++;
-                string underlying = s.Substring(0, i).TrimEnd();
-                string expiry = (i < s.Length) ? s.Substring(i) : "";
-                return string.IsNullOrWhiteSpace(underlying) ? s : $"{underlying}-{expiry}";
-            }
-            catch { return tradingsymbol ?? "UNKNOWN"; }
-        }
-
-        public void SubscribeManual(uint token)
-        {
-            _manualTokens.Add(token);
-
-            var name = ResolveName(token);
-            _contexts.GetOrAdd(token, _ => new InstrumentContext(token, name, TimeSpan.FromMinutes(1)));
-            PortfolioManager.SetGroup(token, MakeGroupName(name));
-
-            _socket?.Subscribe(new[] { token }, "full");
-            OnStatus?.Invoke($"Manual subscribed {token} {name}");
-        }
-
-        public void UnsubscribeManual(uint token)
-        {
-            _manualTokens.Remove(token);
-            _socket?.Unsubscribe(new[] { token });
-            OnStatus?.Invoke($"Manual unsubscribed {token}");
         }
 
         public void ProcessReplayTick(TickData t, Guid replayId, bool isActive)
@@ -517,6 +527,105 @@ namespace ZerodhaOxySocket
                     _exitManager.OnOptionTick(candle.InstrumentToken, candle.Close, candle.Time);
                 }
             }
+        }
+
+        private void LoadInstrumentNames()
+        {
+            try
+            {
+                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
+                foreach (var it in list)
+                {
+                    var name = string.IsNullOrWhiteSpace(it.Tradingsymbol)
+                        ? (it.Name ?? it.InstrumentToken.ToString())
+                        : it.Tradingsymbol;
+                    _instrumentNameCache[(uint)it.InstrumentToken] = name;
+                }
+            }
+            catch { }
+        }
+
+        private string ResolveName(uint token)
+        {
+            if (_instrumentNameCache.TryGetValue(token, out var name)) return name;
+            try
+            {
+                var list = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
+                var it = list.FirstOrDefault(x => x.InstrumentToken == token);
+                if (it != null)
+                {
+                    var nm = string.IsNullOrWhiteSpace(it.Tradingsymbol) ? (it.Name ?? token.ToString()) : it.Tradingsymbol;
+                    _instrumentNameCache[token] = nm;
+                    return nm;
+                }
+            }
+            catch { }
+            return token.ToString();
+        }
+
+        private bool ShouldRecord(
+            uint token, double price, long vol, long lastQty,
+            DateTime tickUtc, bool allowAfterHours = false)
+        {
+            if (!allowAfterHours && !SessionClock.IsRegularSessionAt(tickUtc))
+            {
+                SignalDiagnostics.Reject(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), $"SessionClock denied recording (afterHours). tickIst={ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc):O}");
+                return false;
+            }
+            var last = _lastSeen.GetOrAdd(token, _ => (double.NaN, -1));
+            bool unchanged = last.price == price && last.vol == vol;
+            if (unchanged && lastQty <= 0)
+            {
+                SignalDiagnostics.Reject(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), $"Stale/no-trade tick: unchanged price/vol and lastQty={lastQty}");
+                return false;
+            }
+            _lastSeen[token] = (price, vol);
+            if (ShouldLogPerTick(token))
+                SignalDiagnostics.Info(token, ResolveName(token), ZerodhaOxySocket.Services.Clock.UtcToIst(tickUtc), "SHOULDREC", $"Allowed (price={price}, vol={vol}, lastQty={lastQty})");
+            return true;
+        }
+
+        private bool ShouldLogPerTick(uint token)
+        {
+            var now = SessionClock.NowIst();
+            var last = _lastDiagLog.GetOrAdd(token, DateTime.MinValue);
+            if (now - last < _perTickLogInterval) return false;
+            _lastDiagLog[token] = now;
+            return true;
+        }
+
+        // Restore SubscribeManual and UnsubscribeManual
+        public void SubscribeManual(uint token)
+        {
+            _manualTokens.Add(token);
+            var name = ResolveName(token);
+            _contexts.GetOrAdd(token, _ => new InstrumentContext(token, name, TimeSpan.FromMinutes(1)));
+            PortfolioManager.SetGroup(token, MakeGroupName(name));
+            _socket?.Subscribe(new[] { token }, "full");
+            OnStatus?.Invoke($"Manual subscribed {token} {name}");
+        }
+
+        public void UnsubscribeManual(uint token)
+        {
+            _manualTokens.Remove(token);
+            _socket?.Unsubscribe(new[] { token });
+            OnStatus?.Invoke($"Manual unsubscribed {token}");
+        }
+
+        // Restore MakeGroupName
+        private string MakeGroupName(string tradingsymbol)
+        {
+            try
+            {
+                tradingsymbol ??= "";
+                string s = tradingsymbol.ToUpperInvariant();
+                if (s.EndsWith("CE") || s.EndsWith("PE")) s = s[..^2];
+                int i = 0; while (i < s.Length && !char.IsDigit(s[i])) i++;
+                string underlying = s.Substring(0, i).TrimEnd();
+                string expiry = (i < s.Length) ? s.Substring(i) : "";
+                return string.IsNullOrWhiteSpace(underlying) ? s : $"{underlying}-{expiry}";
+            }
+            catch { return tradingsymbol ?? "UNKNOWN"; }
         }
     }
 }

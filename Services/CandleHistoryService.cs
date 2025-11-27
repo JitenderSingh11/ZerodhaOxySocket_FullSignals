@@ -131,9 +131,11 @@ namespace ZerodhaOxySocket
                 // Loop through the candles in batches and insert
                 for (int batchIndex = 0; batchIndex < batches; batchIndex++)
                 {
-                    var currentBatch = candles.Skip(batchIndex * batchSize).Take(batchSize).ToList();
+                    try
+                    {
+                        var currentBatch = candles.Skip(batchIndex * batchSize).Take(batchSize).ToList();
 
-                    var sql = @"
+                        var sql = @"
                     IF NOT EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'CandlesHistory')
 BEGIN
 
@@ -150,7 +152,7 @@ CREATE TABLE CandlesHistory (
     Volume BIGINT NULL,
     OI BIGINT NULL,
     DateInserted DATETIME2 DEFAULT GETDATE(),
-    UNIQUE (InstrumentToken, CandleTime) -- to prevent duplicate candle inserts
+    UNIQUE (InstrumentToken, CandleTime, Interval) -- to prevent duplicate candle inserts
 );
 
 END
@@ -158,23 +160,28 @@ END
 
 INSERT INTO CandlesHistory (InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume, OI)
                     SELECT @InstrumentToken, @InstrumentName, @Interval, @CandleTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume, @OI
-                    WHERE NOT EXISTS (SELECT 1 FROM CandlesHistory WHERE InstrumentToken = @InstrumentToken AND CandleTime = @CandleTime)";
+                    WHERE NOT EXISTS (SELECT 1 FROM CandlesHistory WHERE InstrumentToken = @InstrumentToken AND CandleTime = @CandleTime and Interval = @Interval)";
 
-                    var parameters = currentBatch.Select(c => new
+                        var parameters = currentBatch.Select(c => new
+                        {
+                            c.InstrumentToken,
+                            c.InstrumentName,
+                            c.Interval,
+                            c.CandleTime,
+                            c.OpenPrice,
+                            c.HighPrice,
+                            c.LowPrice,
+                            c.ClosePrice,
+                            c.Volume,
+                            c.OI
+                        });
+
+                        await connection.ExecuteAsync(sql, parameters);
+                    }
+                    catch (Exception ex)
                     {
-                        c.InstrumentToken,
-                        c.InstrumentName,
-                        c.Interval,
-                        c.CandleTime,
-                        c.OpenPrice,
-                        c.HighPrice,
-                        c.LowPrice,
-                        c.ClosePrice,
-                        c.Volume,
-                        c.OI
-                    });
-
-                    await connection.ExecuteAsync(sql, parameters);
+                        Console.WriteLine($"Error inserting candle batch {batchIndex + 1}: {ex.Message}");
+                    }
                 }
             }
         }
@@ -273,7 +280,7 @@ INSERT INTO CandlesHistory (InstrumentToken, InstrumentName, Interval, CandleTim
 
                 // Upsert batch into DB. Implement UpsertCandleHistoryBatch to perform efficient set-based upsert.
                 // If you don't have MERGE, you can insert with WHERE NOT EXISTS using table-valued parameter or temporary table.
-                InsertCandlesInBatches(batch);
+                await InsertCandlesInBatches(batch);
 
                 processed += batch.Count;
                 int percent = (int)(processed * 100.0 / Math.Max(1, total));

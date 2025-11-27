@@ -78,7 +78,6 @@ namespace ZerodhaOxySocket.MultiSockets
             var reader = _channels[partitionIndex].Reader;
             var batch = new List<TickData>(_dbBatchSize);
             DateTime lastFlush = SessionClock.NowIst();
-
             try
             {
                 while (await reader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
@@ -87,19 +86,17 @@ namespace ZerodhaOxySocket.MultiSockets
                     {
                         var name = ResolveNameSafe(tick.InstrumentToken);
                         var token = tick.InstrumentToken;
-
                         var delay = tick.ReceivedAt.HasValue ? tick.ReceivedAt.Value - tick.TickTime : TimeSpan.Zero;
                         if (delay > MaxAllowedTickDelay)
                         {
                             Interlocked.Increment(ref _totalDropped);
-                            SignalDiagnostics.Warn(token, name, tick.TickTime, $"Dropping stale tick delayMs={delay.TotalMilliseconds:F0}");
+                            await SignalDiagnostics.WarnAsync(token, name, tick.TickTime, $"Dropping stale tick delayMs={delay.TotalMilliseconds:F0}");
                             //continue;
                         }
 
                         try
                         {
                             tick.InstrumentName = name;
-
                             batch.Add(tick);
                             if (batch.Count >= _dbBatchSize || (SessionClock.NowIst() - lastFlush) >= DbFlushInterval)
                             {
@@ -109,13 +106,13 @@ namespace ZerodhaOxySocket.MultiSockets
 
                                 // Schedule a bulk write limited by semaphore
                                 await _writeSemaphore.WaitAsync().ConfigureAwait(false);
-                                var writeTask = Task.Run(() =>
+                                var writeTask = Task.Run(async () =>
                                 {
                                     var sw = Stopwatch.StartNew();
                                     try
                                     {
-                                        DataAccess.InsertTicksBulk(flush);
-                                        SignalDiagnostics.Info(token, name, DateTime.Now, "DB", $"Inserted {flush.Length} ticks (bulk)");
+                                        await DataAccess.InsertTicksBulkAsync(flush);
+                                        await SignalDiagnostics.InfoAsync(token, name, DateTime.Now, "DB", $"Inserted {flush.Length} ticks (bulk)");
 
                                         // metrics
                                         Interlocked.Increment(ref _totalBulkWrites);
@@ -125,7 +122,7 @@ namespace ZerodhaOxySocket.MultiSockets
                                     }
                                     catch (Exception ex)
                                     {
-                                        SignalDiagnostics.Reject(token, name, DateTime.Now, $"Bulk insert failed: {ex.Message}");
+                                        await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"Bulk insert failed: {ex.Message}");
                                     }
                                     finally
                                     {
@@ -138,7 +135,7 @@ namespace ZerodhaOxySocket.MultiSockets
                         }
                         catch (Exception eProc)
                         {
-                            SignalDiagnostics.Reject(token, name, DateTime.Now, $"Tick processing error: {eProc.Message}");
+                            await SignalDiagnostics.RejectAsync(token, name, DateTime.Now, $"Tick processing error: {eProc.Message}");
                         }
                     }
                 }
@@ -146,7 +143,7 @@ namespace ZerodhaOxySocket.MultiSockets
             catch (OperationCanceledException) { /* graceful */ }
             catch (Exception ex)
             {
-                SignalDiagnostics.Reject(0, "TickWriter", SessionClock.NowIst(), $"WriterLoop failed: {ex.Message}");
+                await SignalDiagnostics.RejectAsync(0, "TickWriter", SessionClock.NowIst(), $"WriterLoop failed: {ex.Message}");
             }
             finally
             {
@@ -156,12 +153,12 @@ namespace ZerodhaOxySocket.MultiSockets
                     {
                         await _writeSemaphore.WaitAsync().ConfigureAwait(false);
                         var flush = batch.ToArray();
-                        var writeTask = Task.Run(() =>
+                        var writeTask = Task.Run(async () =>
                         {
                             var sw = Stopwatch.StartNew();
                             try
                             {
-                                DataAccess.InsertTicksBulk(flush);
+                                await DataAccess.InsertTicksBulkAsync(flush);
                                 Interlocked.Increment(ref _totalBulkWrites);
                                 Interlocked.Add(ref _totalBulkRows, flush.Length);
                                 Interlocked.Add(ref _totalBulkWriteDurationMs, sw.ElapsedMilliseconds);

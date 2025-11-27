@@ -52,6 +52,8 @@ namespace ZerodhaOxySocket
         {
             try
             {
+                if (instrumentList == null)
+                    instrumentList = InstrumentHelper.LoadInstrumentsFromCsv(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "instruments.csv"));
                 var it = instrumentList.FirstOrDefault(x => x.InstrumentToken == token);
                 if (it != null) return string.IsNullOrWhiteSpace(it.Tradingsymbol) ? (it.Name ?? token.ToString()) : it.Tradingsymbol;
             }

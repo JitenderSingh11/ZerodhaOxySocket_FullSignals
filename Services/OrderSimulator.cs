@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 
 namespace ZerodhaOxySocket
 {
@@ -91,6 +92,56 @@ namespace ZerodhaOxySocket
                 Reason = order.Reason
             };
             DataAccess.InsertSimTrade(replayId, sim);
+            return sim;
+        }
+
+        public static async Task<SimTrade> PlaceOrderNextTickAsync(TickData sourceTickData, Guid replayId, SimOrder order)
+        {
+            var tick = sourceTickData ?? DataAccess.GetFirstTickAfter(order.InstrumentToken, order.PlacedAt);
+            Candle candle = null;
+            if (replayId != Guid.Empty && tick == null)
+            {
+                candle = DataAccess.LoadInRangeCandlesAggregated(order.InstrumentToken, Config.Current.Trading.TimeframeMinutes, order.PlacedAt);
+            }
+            if ((tick == null && candle == null) || (tick?.TickTime - order.PlacedAt > MaxFillWait || candle?.Time - order.PlacedAt > MaxFillWait))
+            {
+                var unfilled = new SimTrade
+                {
+                    ReplayId = replayId,
+                    InstrumentToken = order.InstrumentToken,
+                    InstrumentName = order.InstrumentName,
+                    UnderlyingToken = order.UnderlyingToken,
+                    UnderlyingPrice = order.UnderlyingPrice,
+                    TradeSide = order.Side,
+                    QuantityLots = order.QuantityLots,
+                    EntryTime = order.PlacedAt,
+                    EntryPrice = 0,
+                    Reason = "Unfilled"
+                };
+                await DataAccess.InsertSimTradeAsync(replayId, unfilled);
+                return unfilled;
+            }
+            double fill = tick?.LastPrice ?? default;
+            if (fill == default && candle != null)
+            {
+                var orderCloserToCandleOpen = Math.Abs((candle.Time - order.PlacedAt).TotalSeconds);
+                var orderCloserToCandleClose = Math.Abs((candle.Time.AddMinutes(Config.Current.Trading.TimeframeMinutes) - order.PlacedAt).TotalSeconds);
+                fill = orderCloserToCandleOpen < orderCloserToCandleClose ? candle.Open : candle.Close;
+            }
+            var sim = new SimTrade
+            {
+                ReplayId = replayId,
+                InstrumentToken = order.InstrumentToken,
+                InstrumentName = order.InstrumentName,
+                UnderlyingToken = order.UnderlyingToken,
+                UnderlyingPrice = order.UnderlyingPrice,
+                TradeSide = order.Side,
+                QuantityLots = order.QuantityLots,
+                EntryTime = tick?.TickTime ?? order.PlacedAt,
+                EntryPrice = fill,
+                Reason = order.Reason
+            };
+            await DataAccess.InsertSimTradeAsync(replayId, sim);
             return sim;
         }
 
