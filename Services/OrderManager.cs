@@ -65,10 +65,35 @@ namespace ZerodhaOxySocket
             return _orders.Values.Any(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Open);
         }
 
+        public bool HasPlacedPositionForUnderlying(long underlyingToken)
+        {
+            return _orders.Values.Any(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Placed);
+        }
+
+
+        public bool HasPlacedPositionForInstrument(long instrumentToken)
+        {
+            return _orders.Values.Any(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Placed);
+        }
+
         public List<OrderRecord> GetOpenOrdersForInstrument(long instrumentToken)
         {
             return _orders.Values
                 .Where(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Open)
+                .ToList();
+        }
+
+        public List<OrderRecord> GetPlacedOrdersForInstrument(long instrumentToken)
+        {
+            return _orders.Values
+                .Where(x => x.InstrumentToken == instrumentToken && x.Status == OrderStatus.Placed)
+                .ToList();
+        }
+
+        public List<OrderRecord> GetPlacedOrdersForUnderlying(long underlyingToken)
+        {
+            return _orders.Values
+                .Where(x => x.UnderlyingToken == underlyingToken && x.Status == OrderStatus.Placed)
                 .ToList();
         }
 

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using static ZerodhaOxySocket.ReplayWindow;
@@ -15,7 +16,7 @@ namespace ZerodhaOxySocket
         public DateTime End { get; set; }
         public long[] Tokens { get; set; } = Array.Empty<long>();
         public double TimeScale { get; set; } = 10.0; // 1 = real-time, >1 = faster
-        public Guid ReplayId { get; } = Guid.NewGuid();
+        public Guid ReplayId { get; }
 
         public ReplayMode Mode { get; set; } = ReplayMode.Candle; // default
         public int CandleTfMinutes { get; set; } = 5; // used when Mode == Candle
@@ -56,6 +57,8 @@ namespace ZerodhaOxySocket
 
         public ReplayEngine(ReplayConfig cfg) { _cfg = cfg; }
 
+        private TickHub _tickHub = null;
+
         public void Start()
         {
             if (_task != null && !_task.IsCompleted) return;
@@ -71,19 +74,28 @@ namespace ZerodhaOxySocket
 
         private void RunLoop(CancellationToken ct)
         {
+            _tickHub = new TickHub();
 
-            TickHub.Instance.ReplayInit(_cfg);
+            _tickHub.ReplayInit(_cfg);
 
-            if (_cfg.Mode == ReplayMode.Tick)
+            try
             {
-                RunAsTicks(_cfg);
-            }
-            else
-            {
-                RunAsCandles(_cfg);
-            }
 
+                if (_cfg.Mode == ReplayMode.Tick)
+                {
+                    RunAsTicks(_cfg);
+                }
+                else
+                {
+                    RunAsCandles(_cfg);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Expected on cancellation
+            }
         }
+
 
         private void RunAsTicks(ReplayConfig cfg)
         {
@@ -99,7 +111,7 @@ namespace ZerodhaOxySocket
 
                     // Process tick through the same pipeline used by live feed.
                     // Important: ProcessReplayTick must treat the tick.TickTime as the "current time"
-                    TickHub.Instance.ProcessReplayTick(tick, _cfg.ReplayId, IsActive);
+                    _tickHub.ProcessReplayTick(tick, replayId: Guid.NewGuid() , IsActive);
 
                     lastTickTime = tick.TickTime;
                     OnReplayTimeAdvance?.Invoke(lastTickTime.Value);
@@ -109,7 +121,7 @@ namespace ZerodhaOxySocket
 
         private void RunAsCandles(ReplayConfig cfg)
         {
-            foreach (var token in cfg.Tokens)
+            foreach (var token in cfg.SubscribedInstruments.Select(t => t.Token))
             {
                 // load aggregated candles for this token
                 var candles = DataAccess.LoadAggregatedCandles(token, cfg.Start, cfg.End, cfg.CandleTfMinutes);
@@ -119,7 +131,7 @@ namespace ZerodhaOxySocket
                 {
 
                     // Call the TickHub's replay-candle handler
-                    TickHub.Instance.ProcessReplayCandle((uint)token, candle, cfg.ReplayId);
+                    _tickHub.ProcessReplayCandle((uint)token, candle, replayId: Guid.NewGuid());
 
                     lastTime = candle.Time;
                     OnReplayTimeAdvance?.Invoke(candle.Time);

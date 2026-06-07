@@ -78,12 +78,12 @@ namespace ZerodhaOxySocket
         /// <summary>
         /// Total channel capacity (will be divided among partitions).
         /// </summary>
-        public int ChannelCapacity { get; set; } = 100000;
+        public int ChannelCapacity { get; set; } = 300000;
 
         /// <summary>
         /// Maximum concurrent SqlBulkCopy operations.
         /// </summary>
-        public int MaxConcurrentBulkWrites { get; set; } = 2;
+        public int MaxConcurrentBulkWrites { get; set; } = 3;
 
         /// <summary>
         /// Batch size for each bulk insert.
@@ -99,8 +99,49 @@ namespace ZerodhaOxySocket
         /// Maximum allowed tick delay in seconds before dropping the tick.
         /// </summary>
         public int MaxAllowedTickDelaySeconds { get; set; } = 8;
+
+        /// <summary>
+        /// Number of writer tasks per partition.
+        /// </summary>
+        public int WritersPerPartition { get; set; } = 4;
     }
 
+
+    public class TickPipelineConfig
+    {
+        /// <summary>
+        /// Number of partitions for the pipeline. 0 means auto (ProcessorCount/2).
+        /// </summary>
+        public int Partitions { get; set; } = 0;
+
+        /// <summary>
+        /// Total channel capacity (will be divided among partitions).
+        /// </summary>
+        public int ChannelCapacity { get; set; } = 300000;
+
+        /// <summary>
+        /// Number of consumer tasks per partition.
+        /// </summary>
+        public int ConsumersPerPartition { get; set; } = 4;
+    }
+
+    public class OrderPipelineConfig
+    {
+        /// <summary>
+        /// Number of partitions for order processing. 0 means auto (ProcessorCount/4).
+        /// </summary>
+        public int Partitions { get; set; } = 0;
+
+        /// <summary>
+        /// Channel capacity for order ticks (typically smaller than main pipeline).
+        /// </summary>
+        public int ChannelCapacity { get; set; } = 50000;
+
+        /// <summary>
+        /// Number of consumer tasks per partition for order processing.
+        /// </summary>
+        public int ConsumersPerPartition { get; set; } = 2;
+    }
 
     public class AppConfig
     {
@@ -108,6 +149,9 @@ namespace ZerodhaOxySocket
         public string ApiSecret { get; set; } = "";
         public string AccessToken { get; set; } = "";
         public string SqlConnectionString { get; set; } = "Server=localhost;Database=ZerodhaDB;User Id=sa;Password=YourStrong!Pass;TrustServerCertificate=True;";
+
+        // Optional: tick retention window config for candle formation
+        public int TickRetentionWindowMinutes { get; set; }
         public int DefaultTimeframeMinutes { get; set; } = 1;
         public bool PaperTrade { get; set; } = true;
         public bool EnableSimulator { get; set; } = false;
@@ -121,7 +165,24 @@ namespace ZerodhaOxySocket
         // TickWriter settings
         public TickWriterConfig TickWriter { get; set; } = new();
 
+        // TickPipeline settings
+        public TickPipelineConfig TickPipeline { get; set; } = new();
+
+        // OrderPipeline settings
+        public OrderPipelineConfig OrderPipeline { get; set; } = new();
+
         public bool EnableChartUpdates { get; set; } = false;
+
+        /// <summary>
+        /// Enable real-time candle chart rendering (OxyPlot). 
+        /// Disable to save ~100-200 MB RAM and reduce UI thread overhead.
+        /// </summary>
+        public bool EnableLiveCharting { get; set; } = false;
+
+        /// <summary>
+        /// Enable side-by-side comparison of Original vs Optimized candle builder
+        /// </summary>
+        public bool EnableCandleComparison { get; set; } = false;
     }
     
     public class SubscribedInstrument

@@ -19,6 +19,8 @@
                 <MenuItem Header="Replay Engine..." Click="OpenReplayWindow_Click"/>
                 <MenuItem Header="Refresh Instruments..." Click="RefreshInstruments_Click"/>
                 <MenuItem Header="Refresh Candles History..." Click="OpenCandleHistoryWindow"/>
+                <Separator/>
+                <MenuItem Header="Export Comparison Report..." Click="ExportComparisonReport_Click" ToolTip="Generate and save performance comparison report (requires EnableCandleComparison=true)"/>
             </MenuItem>
             <CheckBox x:Name="chkAutoScroll" Content="Auto-scroll" IsChecked="True"
           Checked="ChkAutoScroll_Checked" Unchecked="ChkAutoScroll_Unchecked"/>

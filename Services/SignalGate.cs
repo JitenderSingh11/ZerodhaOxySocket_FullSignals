@@ -3,11 +3,23 @@ using System.Collections.Generic;
 
 namespace ZerodhaOxySocket
 {
-    public static class SignalGate
+    /// <summary>
+    /// Signal gate for debouncing signal emissions.
+    /// Converted to instance-based to prevent replay/live signal cross-contamination.
+    /// </summary>
+    public class SignalGate
     {
-        private static readonly Dictionary<long, (SignalType type, DateTime when)> _last = new();
+        // Singleton instance for live mode
+        private static SignalGate _instance;
+        public static SignalGate Instance => _instance ??= new SignalGate();
 
-        public static bool ShouldEmitSignal(long underlyingToken, SignalType type, DateTime when, int debounceCandles)
+        // Instance state
+        private readonly Dictionary<long, (SignalType type, DateTime when)> _last = new();
+
+        // Constructor for replay mode (or live mode via singleton)
+        public SignalGate() { }
+
+        public bool ShouldEmitSignal(long underlyingToken, SignalType type, DateTime when, int debounceCandles)
         {
             if (!_last.TryGetValue(underlyingToken, out var prev))
             {
@@ -20,6 +32,14 @@ namespace ZerodhaOxySocket
 
             _last[underlyingToken] = (type, when);
             return true;
+        }
+
+        /// <summary>
+        /// Clear all signal history (useful for replay reset)
+        /// </summary>
+        public void Clear()
+        {
+            _last.Clear();
         }
     }
 }

@@ -5,6 +5,9 @@
   "SqlConnectionString": "Server=localhost;Database=ZerodhaDB;User Id=jsingh;Password=HitmaN?54708943 ;TrustServerCertificate=True;Connection Timeout=300",
 
   "EnableChartUpdates": false,
+  "EnableLiveCharting": false,
+
+  "TickRetentionWindowMinutes": 20,
 
   "DefaultTimeframeMinutes": 5,
   "PaperTrade": true,
@@ -68,11 +71,24 @@
     "SeedBars": 300
   },
   "TickWriter": {
-    "Partitions": 0,
-    "ChannelCapacity": 50000,
+    "Partitions": 2,
+    "ChannelCapacity": 100000,
     "MaxConcurrentBulkWrites": 2,
-    "DbBatchSize": 1000,
-    "DbFlushIntervalSeconds": 2,
-    "MaxAllowedTickDelaySeconds": 8
+    "DbBatchSize": 2000,
+    "DbFlushIntervalSeconds": 1,
+    "MaxAllowedTickDelaySeconds": 8,
+    "WritersPerPartition": 2
   }
+  ,
+  "TickPipeline": {
+    "Partitions": 2,
+    "ChannelCapacity": 100000,
+    "ConsumersPerPartition": 2
+  },
+  "OrderPipeline": {
+    "Partitions": 2,
+    "ChannelCapacity": 25000,
+    "ConsumersPerPartition": 2
+  },
+  "EnableCandleComparison": false
 }

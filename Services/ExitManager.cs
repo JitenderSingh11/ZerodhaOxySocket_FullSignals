@@ -12,10 +12,20 @@ namespace ZerodhaOxySocket
 
         private readonly Dictionary<Guid, OrderRecord> _open = new();
         private readonly OrderManager _orderManager;
+        private readonly UnderlyingCandleCache _candleCache;
 
+        // Constructor for live mode (uses singleton cache)
         public ExitManager()
         {
             _orderManager = OrderManager.Instance;
+            _candleCache = UnderlyingCandleCache.Instance;
+        }
+
+        // Constructor for replay mode (accepts custom cache)
+        public ExitManager(UnderlyingCandleCache candleCache, OrderManager orderManager = null)
+        {
+            _orderManager = orderManager ?? OrderManager.Instance;
+            _candleCache = candleCache ?? UnderlyingCandleCache.Instance;
         }
 
         public void Track(OrderRecord order)
@@ -33,7 +43,7 @@ namespace ZerodhaOxySocket
                 if (o.Status != OrderStatus.Open || o.InstrumentToken != token) continue;
 
                 // Underlying ATR (5m)
-                double atr = UnderlyingCandleCache.GetAtr(o.UnderlyingToken, Config.Current.Trading.AtrPeriod);
+                double atr = _candleCache.GetAtr(o.UnderlyingToken, Config.Current.Trading.AtrPeriod);
 
                 if (atr <= 0) continue;
 

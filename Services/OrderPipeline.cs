@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -11,8 +12,9 @@ namespace ZerodhaOxySocket
     /// </summary>
     public static class OrderPipeline
     {
-        private static readonly int Partitions = Math.Max(1, Environment.ProcessorCount / 2);
-        private static readonly int ConsumersPerPartition = 2; // Tune as needed
+        private static readonly int Partitions;
+        private static readonly int ConsumersPerPartition;
+        private static readonly int ChannelCapacity;
         private static readonly Channel<TickData>[] _channels;
         private static readonly Task[] _consumerTasks;
 
@@ -26,16 +28,21 @@ namespace ZerodhaOxySocket
 
         static OrderPipeline()
         {
+            var cfg = Config.Current.OrderPipeline;
+            Partitions = cfg.Partitions > 0 ? cfg.Partitions : Math.Max(1, Environment.ProcessorCount / 4);
+            ChannelCapacity = cfg.ChannelCapacity > 0 ? cfg.ChannelCapacity : 50000;
+            ConsumersPerPartition = cfg.ConsumersPerPartition > 0 ? cfg.ConsumersPerPartition : 2;
+
             _channels = new Channel<TickData>[Partitions];
             _consumerTasks = new Task[Partitions * ConsumersPerPartition];
 
             for (int i = 0; i < Partitions; i++)
             {
-                var opts = new BoundedChannelOptions(10000)
+                var opts = new BoundedChannelOptions(ChannelCapacity)
                 {
                     SingleReader = false,
                     SingleWriter = false,
-                    FullMode = BoundedChannelFullMode.DropWrite
+                    FullMode = BoundedChannelFullMode.DropOldest // Prioritize newest ticks
                 };
                 _channels[i] = Channel.CreateBounded<TickData>(opts);
                 for (int j = 0; j < ConsumersPerPartition; j++)
@@ -77,6 +84,29 @@ namespace ZerodhaOxySocket
                 Interlocked.Increment(ref _totalDropped);
             }
             return ok;
+        }
+
+        public static Task<bool> EnqueueOrderBatchAsync(List<TickData> batch)
+        {
+            if (batch == null || batch.Count == 0) return Task.FromResult(true);
+
+            foreach (var t in batch)
+            {
+                var idx = (int)(t.InstrumentToken % (uint)Partitions);
+                if (_channels[idx].Writer.TryWrite(t))
+                {
+                    Interlocked.Increment(ref _totalEnqueued);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _totalDropped);
+                    // We return false on the first dropped tick.
+                    // The caller might want to know that not all ticks were enqueued.
+                    return Task.FromResult(false);
+                }
+            }
+
+            return Task.FromResult(true);
         }
 
         private static async Task StartConsumer(ChannelReader<TickData> reader)

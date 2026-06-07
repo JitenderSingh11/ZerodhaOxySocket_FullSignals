@@ -4,12 +4,23 @@ using System.Linq;
 
 namespace ZerodhaOxySocket
 {
-    // Keeps only underlying candles needed for ATR (fast + in-memory)
-    public static class UnderlyingCandleCache
+    /// <summary>
+    /// Keeps only underlying candles needed for ATR (fast + in-memory).
+    /// Converted to instance-based to support separate live and replay sessions.
+    /// </summary>
+    public class UnderlyingCandleCache
     {
-        private static readonly Dictionary<long, List<Candle>> _byToken = new();
+        // Singleton instance for live mode
+        private static UnderlyingCandleCache _instance;
+        public static UnderlyingCandleCache Instance => _instance ??= new UnderlyingCandleCache();
 
-        public static void AddCandleCacheSeeds(long underlyingToken,IEnumerable<Candle> candlesList)
+        // Instance state
+        private readonly Dictionary<long, List<Candle>> _byToken = new();
+
+        // Constructor for replay mode (or live mode via singleton)
+        public UnderlyingCandleCache() { }
+
+        public void AddCandleCacheSeeds(long underlyingToken, IEnumerable<Candle> candlesList)
         {
             _byToken.Clear();
 
@@ -18,7 +29,8 @@ namespace ZerodhaOxySocket
                 Put(underlyingToken, c);
             }
         }
-        public static void Put(long underlyingToken, Candle c)
+
+        public void Put(long underlyingToken, Candle c)
         {
             if (!_byToken.TryGetValue(underlyingToken, out var list))
             {
@@ -30,7 +42,7 @@ namespace ZerodhaOxySocket
             if (list.Count > 5000) list.RemoveRange(0, list.Count - 5000);
         }
 
-        public static double GetAtr(long underlyingToken, int period)
+        public double GetAtr(long underlyingToken, int period)
         {
             if (!_byToken.TryGetValue(underlyingToken, out var list)) return 0;
             if (list.Count < period + 2) return 0;
@@ -47,6 +59,14 @@ namespace ZerodhaOxySocket
                 sum += tr;
             }
             return sum / period;
+        }
+
+        /// <summary>
+        /// Clear all cached candles (useful for replay reset)
+        /// </summary>
+        public void Clear()
+        {
+            _byToken.Clear();
         }
     }
 }

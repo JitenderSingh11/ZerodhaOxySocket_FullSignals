@@ -1,3 +1,4 @@
+using BenchmarkDotNet.Running;
 using System;
 
 namespace BenchmarkSuite1
@@ -6,9 +7,7 @@ namespace BenchmarkSuite1
     {
         static void Main(string[] args)
         {
-#if BENCHMARK
-            var _ = BenchmarkRunner.Run(typeof(Program).Assembly);
-#endif
+            BenchmarkRunner.Run<TickPipelineBenchmark>();
         }
     }
 }

@@ -220,6 +220,17 @@ VALUES(@InstrumentToken,@InstrumentName,@LastPrice,@LastQuantity,@Volume,@Averag
                 // Convert candle time (internal UTC) to IST for DB
                 var candleTimeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(c.Time);
 
+                // VALIDATION: Ensure date is within SQL Server valid range
+                var minSqlDate = new DateTime(1753, 1, 2);
+                var maxReasonableDate = DateTime.UtcNow.AddDays(2); // Allow 2 day buffer
+                
+                if (candleTimeIst < minSqlDate || candleTimeIst > maxReasonableDate)
+                {
+                    await SignalDiagnostics.WarnAsync(token, name, ZerodhaOxySocket.Services.Clock.NowIst(), 
+                        $"Invalid candle time: {candleTimeIst:O} (Original UTC: {c.Time:O}). Skipping insert.");
+                    return;
+                }
+
                 await conn.ExecuteAsync(@"
 INSERT INTO dbo.Candles(InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
 VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
@@ -231,6 +242,113 @@ VALUES(@token, @name, @interval, @time, @o, @h, @l, @c, @v)",
                 await SignalDiagnostics.RejectAsync(0, "DataAccess", ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"InsertCandleAsync failed: {ex.Message}");
             }
         }
+
+        public static async Task UpdateCandleAsync(Candle c, uint token, string name, bool isPaper = true)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+
+                var interval = $"{Config.Current.Trading.TimeframeMinutes}m";
+                var candleTimeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(c.Time);
+
+                // VALIDATION: Ensure date is within SQL Server valid range
+                var minSqlDate = new DateTime(1753, 1, 2);
+                var maxReasonableDate = DateTime.UtcNow.AddDays(2); // Allow 2 day buffer
+                
+                if (candleTimeIst < minSqlDate || candleTimeIst > maxReasonableDate)
+                {
+                    await SignalDiagnostics.WarnAsync(token, name, ZerodhaOxySocket.Services.Clock.NowIst(), 
+                        $"Invalid candle time: {candleTimeIst:O} (Original UTC: {c.Time:O}). Skipping update.");
+                    return;
+                }
+
+                await conn.ExecuteAsync(@"
+UPDATE dbo.Candles
+SET OpenPrice = @o, HighPrice = @h, LowPrice = @l, ClosePrice = @c, Volume = @v
+WHERE InstrumentToken = @token AND Interval = @interval AND CandleTime = @time",
+                new
+                {
+                    token = (long)token,
+                    name,
+                    interval,
+                    time = candleTimeIst,
+                    o = c.Open,
+                    h = c.High,
+                    l = c.Low,
+                    c = c.Close,
+                    v = (long)c.Volume
+                });
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(token, name, ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"UpdateCandleAsync failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// UPSERT (INSERT or UPDATE) a candle. Safe to call multiple times (idempotent).
+        /// Inserts if candle doesn't exist, updates if it does (for late ticks).
+        /// </summary>
+        public static async Task UpsertCandleAsync(Candle c, uint token, string name, bool isPaper = true)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_cs);
+                await conn.OpenAsync();
+
+                var interval = $"{Config.Current.Trading.TimeframeMinutes}m";
+                var candleTimeIst = ZerodhaOxySocket.Services.Clock.UtcToIst(c.Time);
+
+                // VALIDATION: Ensure date is within SQL Server valid range
+                var minSqlDate = new DateTime(1753, 1, 2);
+                var maxReasonableDate = DateTime.UtcNow.AddDays(2);
+                
+                if (candleTimeIst < minSqlDate || candleTimeIst > maxReasonableDate)
+                {
+                    await SignalDiagnostics.WarnAsync(token, name, ZerodhaOxySocket.Services.Clock.NowIst(), 
+                        $"Invalid candle time: {candleTimeIst:O} (Original UTC: {c.Time:O}). Skipping upsert.");
+                    return;
+                }
+
+                // UPSERT using MERGE (INSERT if not exists, UPDATE if exists)
+                await conn.ExecuteAsync(@"
+MERGE dbo.Candles AS target
+USING (SELECT @token AS InstrumentToken, @interval AS Interval, @time AS CandleTime) AS source
+ON (target.InstrumentToken = source.InstrumentToken 
+    AND target.Interval = source.Interval 
+    AND target.CandleTime = source.CandleTime)
+WHEN MATCHED THEN
+    UPDATE SET 
+        OpenPrice = @o, 
+        HighPrice = @h, 
+        LowPrice = @l, 
+        ClosePrice = @c, 
+        Volume = @v,
+        InstrumentName = @name
+WHEN NOT MATCHED THEN
+    INSERT (InstrumentToken, InstrumentName, Interval, CandleTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume)
+    VALUES (@token, @name, @interval, @time, @o, @h, @l, @c, @v);",
+                new
+                {
+                    token = (long)token,
+                    name,
+                    interval,
+                    time = candleTimeIst,
+                    o = c.Open,
+                    h = c.High,
+                    l = c.Low,
+                    c = c.Close,
+                    v = (long)c.Volume
+                });
+            }
+            catch (Exception ex)
+            {
+                await SignalDiagnostics.RejectAsync(token, name, ZerodhaOxySocket.Services.Clock.UtcToIst(DateTime.UtcNow), $"UpsertCandleAsync failed: {ex.Message}");
+            }
+        }
+
 
         public static async Task InsertSignalAsync(Signal s, uint token, string name, bool isPaper = true)
         {
@@ -558,12 +676,8 @@ ORDER BY [Time];
 
             using var conn = new SqlConnection(_cs);
             conn.Open();
-            var fromIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(from));
-            var toIst = ZerodhaOxySocket.Services.Clock.UtcToIst(ZerodhaOxySocket.Services.Clock.ToUtcFromPossiblyIst(to));
-            var rows = conn.Query<Candle>(sql, new { tok = token, from = fromIst, to = toIst, tf = tfMinutes }).ToList();
-            // convert DB IST times to UTC for internal use
-            foreach (var r in rows)
-                r.Time = TimeZoneInfo.ConvertTimeToUtc(r.Time, IST);
+            var rows = conn.Query<Candle>(sql, new { tok = token, from, to, tf = tfMinutes }).ToList();
+         
             return rows;
         }
 

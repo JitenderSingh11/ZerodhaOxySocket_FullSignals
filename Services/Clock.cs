@@ -33,15 +33,43 @@ namespace ZerodhaOxySocket.Services
         // Input 'dt' may be any kind; it will be normalized to UTC first.
         public static DateTime FloorToBucketIst(DateTime dt, TimeSpan bucket)
         {
-            // Normalize incoming time to UTC
-            var utc = ToUtcFromPossiblyIst(dt);
-            // Convert to IST for bucketing
-            var ist = TimeZoneInfo.ConvertTimeFromUtc(utc, IST);
-            long bucketTicks = (ist.Ticks / bucket.Ticks) * bucket.Ticks;
-            var bucketStartIst = new DateTime(bucketTicks, DateTimeKind.Unspecified); // represent IST wall time
-            // Convert bucket start back to UTC for canonical internal storage
-            var bucketStartUtc = TimeZoneInfo.ConvertTimeToUtc(bucketStartIst, IST);
-            return DateTime.SpecifyKind(bucketStartUtc, DateTimeKind.Utc);
+            try
+            {
+                // Normalize incoming time to UTC
+                var utc = ToUtcFromPossiblyIst(dt);
+                
+                // VALIDATION: Check if UTC is valid
+                if (utc < DateTime.MinValue.AddDays(1) || utc > DateTime.MaxValue.AddDays(-1))
+                {
+                    // Return a safe default (current time floored)
+                    utc = DateTime.UtcNow;
+                }
+                
+                // Convert to IST for bucketing
+                var ist = TimeZoneInfo.ConvertTimeFromUtc(utc, IST);
+                
+                // Calculate bucket ticks with overflow protection
+                long bucketTicks = (ist.Ticks / bucket.Ticks) * bucket.Ticks;
+                
+                // VALIDATION: Ensure bucketTicks is within valid DateTime range
+                if (bucketTicks < DateTime.MinValue.Ticks || bucketTicks > DateTime.MaxValue.Ticks)
+                {
+                    // Fallback to current IST floored
+                    var nowIst = NowIst();
+                    bucketTicks = (nowIst.Ticks / bucket.Ticks) * bucket.Ticks;
+                }
+                
+                // Return bucket start as IST wall time
+                return new DateTime(bucketTicks, DateTimeKind.Unspecified); // IST wall time
+            }
+            catch (Exception ex)
+            {
+                // Last resort: return current time floored
+                var nowIst = NowIst();
+                long safeTicks = (nowIst.Ticks / bucket.Ticks) * bucket.Ticks;
+                System.Diagnostics.Debug.WriteLine($"[Clock.FloorToBucketIst] Error: {ex.Message}. Using fallback time.");
+                return new DateTime(safeTicks, DateTimeKind.Unspecified);
+            }
         }
     }
 }

@@ -33,6 +33,8 @@ namespace ZerodhaOxySocket
         private bool _autoScroll = true;                       // enable/disable auto scroll
         private TimeSpan _autoScrollWindow = TimeSpan.FromMinutes(60); // visible window size
         private double _autoPaddingMinutes = 1.0;              // small padding on right in minutes
+        
+        private bool _enableLiveCharting = false;              // toggle for chart rendering
 
         private TickWriter _tickWriter;
         private CandleAggregator _candleAgg;
@@ -58,35 +60,48 @@ namespace ZerodhaOxySocket
             InitializeComponent();
             Config.Load(AppDomain.CurrentDomain.BaseDirectory);
 
-            _plotModel = new PlotModel { Title = "NIFTY 5m" };
-
-            _plotModel.Axes.Add(new DateTimeAxis
+            // Load charting preference from config
+            _enableLiveCharting = Config.Current.EnableChartUpdates && 
+                                  (Config.Current is AppConfig cfg && 
+                                   cfg.GetType().GetProperty("EnableLiveCharting")?.GetValue(cfg) is bool enabled && enabled);
+            
+            if (_enableLiveCharting)
             {
-                Position = AxisPosition.Bottom,
-                StringFormat = "HH:mm",
-                MajorGridlineStyle = LineStyle.Solid,
-                MinorGridlineStyle = LineStyle.Dot,
-                Title = "Time"
-            });
+                _plotModel = new PlotModel { Title = "NIFTY 5m" };
 
-            _plotModel.Axes.Add(new LinearAxis
+                _plotModel.Axes.Add(new DateTimeAxis
+                {
+                    Position = AxisPosition.Bottom,
+                    StringFormat = "HH:mm",
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    Title = "Time"
+                });
+
+                _plotModel.Axes.Add(new LinearAxis
+                {
+                    Position = AxisPosition.Left,
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    Title = "Price"
+                });
+
+                _candleSeries = new CandleStickSeries
+                {
+                    Title = "Candles",
+                    CandleWidth = 0.3,
+                    IncreasingColor = OxyColors.Green,
+                    DecreasingColor = OxyColors.Red
+                };
+
+                _plotModel.Series.Add(_candleSeries);
+                PlotView.Model = _plotModel;
+            }
+            else
             {
-                Position = AxisPosition.Left,
-                MajorGridlineStyle = LineStyle.Solid,
-                MinorGridlineStyle = LineStyle.Dot,
-                Title = "Price"
-            });
-
-            _candleSeries = new CandleStickSeries
-            {
-                Title = "Candles",
-                CandleWidth = 0.3, // smaller for better fit
-                IncreasingColor = OxyColors.Green,
-                DecreasingColor = OxyColors.Red
-            };
-
-            _plotModel.Series.Add(_candleSeries);
-            PlotView.Model = _plotModel;
+                // Hide chart when disabled
+                PlotView.Visibility = Visibility.Collapsed;
+            }
 
             LoadConfig();
             UpdateMenuState();
@@ -139,7 +154,12 @@ namespace ZerodhaOxySocket
             TickHub.Instance.OnCandleClosed += (s, e) => Dispatcher.Invoke(() =>
             {
                 AppendLog($"Candle {e.InstrumentName} O:{e.Candle.Open:F2} H:{e.Candle.High:F2} L:{e.Candle.Low:F2} C:{e.Candle.Close:F2} V:{e.Candle.Volume}");
-                AddCandle(e.Candle);
+                
+                // Only update chart if live charting is enabled
+                if (_enableLiveCharting)
+                {
+                    AddCandle(e.Candle);
+                }
             });
             TickHub.Instance.OnSignal += (s, e) => Dispatcher.Invoke(() =>
             {
@@ -220,15 +240,136 @@ namespace ZerodhaOxySocket
 
         private void MainWindow_Closing(object sender, CancelEventArgs e)
         {
+            var shutdownLog = new System.Text.StringBuilder();
+            shutdownLog.AppendLine($"=== SHUTDOWN LOG {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+            
             try
             {
-                AppendLog("Shutdown: stopping pipelines...");
+                AppendLog("========================================");
+                AppendLog("SHUTDOWN INITIATED");
+                AppendLog("========================================");
+                shutdownLog.AppendLine("Shutdown initiated");
+                
+                // CHECK 1: Comparison mode enabled?
+                AppendLog($"Comparison mode enabled: {Config.Current.EnableCandleComparison}");
+                shutdownLog.AppendLine($"EnableCandleComparison: {Config.Current.EnableCandleComparison}");
+                
+                if (Config.Current.EnableCandleComparison)
+                {
+                    AppendLog("Generating comparison report...");
+                    shutdownLog.AppendLine("Starting comparison report generation");
+                    
+                    try
+                    {
+                        // CHECK 2: Get report from TickHub
+                        AppendLog("Calling TickHub.Instance.GetComparisonReport()...");
+                        var report = TickHub.Instance.GetComparisonReport();
+                        AppendLog($"Report generated. Length: {report?.Length ?? 0} characters");
+                        shutdownLog.AppendLine($"Report length: {report?.Length ?? 0}");
+                        
+                        if (string.IsNullOrWhiteSpace(report))
+                        {
+                            AppendLog("WARNING: Report is empty or null!");
+                            shutdownLog.AppendLine("WARNING: Empty report");
+                        }
+                        
+                        // CHECK 3: Determine save location
+                        var reportsDir = Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            "ZerodhaOxySocket",
+                            "reports"
+                        );
+                        AppendLog($"Reports directory: {reportsDir}");
+                        shutdownLog.AppendLine($"Reports directory: {reportsDir}");
+                        
+                        // CHECK 4: Create directory
+                        if (!Directory.Exists(reportsDir))
+                        {
+                            AppendLog("Creating reports directory...");
+                            Directory.CreateDirectory(reportsDir);
+                            AppendLog("Reports directory created");
+                            shutdownLog.AppendLine("Directory created");
+                        }
+                        else
+                        {
+                            AppendLog("Reports directory already exists");
+                            shutdownLog.AppendLine("Directory already exists");
+                        }
+                        
+                        // CHECK 5: Write file
+                        var reportPath = Path.Combine(reportsDir, $"comparison_report_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+                        AppendLog($"Writing report to: {reportPath}");
+                        shutdownLog.AppendLine($"Report path: {reportPath}");
+                        
+                        File.WriteAllText(reportPath, report ?? "No comparison data available");
+                        AppendLog($"✓ Comparison report saved successfully!");
+                        AppendLog($"✓ File size: {new FileInfo(reportPath).Length} bytes");
+                        shutdownLog.AppendLine($"File written. Size: {new FileInfo(reportPath).Length} bytes");
+                        
+                        System.Diagnostics.Debug.WriteLine(report);
+                        
+                        // Show summary in log
+                        AppendLog("=== COMPARISON SUMMARY ===");
+                        if (!string.IsNullOrWhiteSpace(report))
+                        {
+                            var lines = report.Split('\n');
+                            int summaryLines = 0;
+                            foreach (var line in lines)
+                            {
+                                if (line.Contains("VERDICT:") || line.Contains("Match") || line.Contains("Speedup:") || 
+                                    line.Contains("Total Ticks") || line.Contains("Candles Match"))
+                                {
+                                    AppendLog(line.Trim());
+                                    summaryLines++;
+                                }
+                            }
+                            AppendLog($"Logged {summaryLines} summary lines");
+                            shutdownLog.AppendLine($"Summary lines: {summaryLines}");
+                        }
+                        
+                        // CHECK 6: Verify file exists
+                        if (File.Exists(reportPath))
+                        {
+                            AppendLog($"✓ Verified: Report file exists at {reportPath}");
+                            shutdownLog.AppendLine("File verified to exist");
+                        }
+                        else
+                        {
+                            AppendLog($"✗ ERROR: Report file does NOT exist after write!");
+                            shutdownLog.AppendLine("ERROR: File verification failed");
+                        }
+                    }
+                    catch (Exception exReport)
+                    {
+                        AppendLog($"✗ Comparison report error: {exReport.GetType().Name}");
+                        AppendLog($"  Message: {exReport.Message}");
+                        AppendLog($"  Stack: {exReport.StackTrace}");
+                        shutdownLog.AppendLine($"ERROR: {exReport.GetType().Name}: {exReport.Message}");
+                        shutdownLog.AppendLine($"Stack: {exReport.StackTrace}");
+                        
+                        if (exReport.InnerException != null)
+                        {
+                            AppendLog($"  Inner: {exReport.InnerException.Message}");
+                            shutdownLog.AppendLine($"Inner: {exReport.InnerException.Message}");
+                        }
+                    }
+                }
+                else
+                {
+                    AppendLog("⚠ Comparison mode is DISABLED - no report will be generated");
+                    AppendLog("  To enable: Set 'EnableCandleComparison': true in config.json");
+                    shutdownLog.AppendLine("Comparison mode disabled - skipped report generation");
+                }
+                
                 // Stop tick pipeline (and order pipeline)
+                AppendLog("Stopping pipelines...");
+                shutdownLog.AppendLine("Stopping pipelines");
                 Task.Run(() => TickPipeline.StopAsync()).GetAwaiter().GetResult();
 
                 if (_tickWriter != null)
                 {
                     AppendLog("Stopping TickWriter...");
+                    shutdownLog.AppendLine("Stopping TickWriter");
                     _tickWriter.StopAsync().GetAwaiter().GetResult();
                 }
 
@@ -238,11 +379,38 @@ namespace ZerodhaOxySocket
                 }
                 try { (_signalEngine as IDisposable)?.Dispose(); } catch { }
 
-                AppendLog("Shutdown complete.");
+                AppendLog("========================================");
+                AppendLog("✓ SHUTDOWN COMPLETE");
+                AppendLog("========================================");
+                shutdownLog.AppendLine("Shutdown complete");
             }
             catch (Exception ex)
             {
-                AppendLog($"Shutdown error: {ex.Message}");
+                AppendLog($"✗ SHUTDOWN ERROR: {ex.GetType().Name}");
+                AppendLog($"  Message: {ex.Message}");
+                AppendLog($"  Stack: {ex.StackTrace}");
+                shutdownLog.AppendLine($"SHUTDOWN ERROR: {ex.Message}");
+                shutdownLog.AppendLine($"Stack: {ex.StackTrace}");
+            }
+            finally
+            {
+                // Write shutdown log to a separate file for diagnostics
+                try
+                {
+                    var logDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "ZerodhaOxySocket",
+                        "logs"
+                    );
+                    Directory.CreateDirectory(logDir);
+                    var shutdownLogPath = Path.Combine(logDir, $"shutdown_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                    File.WriteAllText(shutdownLogPath, shutdownLog.ToString());
+                    AppendLog($"Shutdown diagnostic log: {shutdownLogPath}");
+                }
+                catch
+                {
+                    // If even this fails, at least we tried
+                }
             }
         }
 
@@ -559,7 +727,7 @@ private void SaveAccessTokenToUserFile(string token)
 
         public void AddCandle(Candle candle)
         {
-            if (candle == null) return;
+            if (candle == null || !_enableLiveCharting || _plotModel == null || _candleSeries == null) return;
 
             // convert time to OxyPlot's double X value
             double x = DateTimeAxis.ToDouble(candle.Time);
@@ -681,6 +849,50 @@ private void SaveAccessTokenToUserFile(string token)
         {
             var w = new CandleHistoryWindow { Owner = this };
             w.ShowDialog();
+        }
+
+        /// <summary>
+        /// Export comparison report manually (can be called from menu or button)
+        /// </summary>
+        private void ExportComparisonReport_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (!Config.Current.EnableCandleComparison)
+                {
+                    MessageBox.Show("Comparison mode is not enabled. Set EnableCandleComparison=true in config.json",
+                        "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                var report = TickHub.Instance.GetComparisonReport();
+                var reportsDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ZerodhaOxySocket",
+                    "reports"
+                );
+                Directory.CreateDirectory(reportsDir);
+                
+                var reportPath = Path.Combine(reportsDir, $"comparison_report_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+                File.WriteAllText(reportPath, report);
+
+                AppendLog($"Comparison report exported: {reportPath}");
+                System.Diagnostics.Debug.WriteLine(report);
+
+                // Show the report in notepad
+                var result = MessageBox.Show($"Report saved to:\n{reportPath}\n\nOpen in Notepad?",
+                    "Comparison Report", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                
+                if (result == MessageBoxResult.Yes)
+                {
+                    System.Diagnostics.Process.Start("notepad.exe", reportPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Export comparison report error: {ex.Message}");
+                MessageBox.Show($"Error exporting report: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
 
